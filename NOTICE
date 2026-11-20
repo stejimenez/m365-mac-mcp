@@ -1,0 +1,51 @@
+# Third-Party Notices & Upstream Attribution
+
+**Microsoft 365 for Mac MCP (`m365-mac-mcp`)**
+Copyright (c) 2025-2026 Sterling Jimenez, Ph.D. (stejimenez@gmail.com)
+Licensed under the PolyForm Noncommercial License 1.0.0 (see `LICENSE`).
+Commercial licenses available via stejimenez@gmail.com.
+
+---
+
+## Upstream Foundation Notice (MIT License)
+
+Portions of this project were originally derived from `macos-office365-mcp-server`
+(<https://github.com/vAirpower/macos-office365-mcp-server>), which was made
+available under the MIT License reproduced below:
+
+```text
+MIT License
+
+Copyright (c) 2025 macOS Office 365 MCP Server
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+## Third-Party Python Dependencies
+
+This project relies on the following open-source Python packages (installed separately via `requirements.txt`):
+
+- `mcp` — MIT License
+- `openpyxl` — MIT License
+- `python-docx` — MIT License
+- `python-pptx` — MIT License
+- `aiofiles` — Apache License 2.0
+- `pytest` / `pytest-asyncio` — MIT / Apache License 2.0
