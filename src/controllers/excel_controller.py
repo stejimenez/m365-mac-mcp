@@ -962,6 +962,40 @@ class ExcelController:
     # Writing (Cells, Ranges, Formulas, Tables, Charts)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def get_formula_guard_mode(raw: Optional[str] = None) -> str:
+        """Parse OFFICE_MCP_FORMULA_GUARD ('literals_only' default | 'strict' | 'off'), case-insensitive."""
+        val = (
+            os.environ.get("OFFICE_MCP_FORMULA_GUARD", "literals_only")
+            if raw is None
+            else raw
+        ).strip().lower()
+        if not val or val in ("literals_only", "literals", "literal", "default"):
+            return "literals_only"
+        if val in ("strict", "all", "on"):
+            return "strict"
+        if val in ("off", "false", "0", "no", "none", "disabled"):
+            return "off"
+        logger.warning(
+            f"Unknown OFFICE_MCP_FORMULA_GUARD='{val}'. Falling back to 'literals_only'. "
+            "Valid values: literals_only, strict, off."
+        )
+        return "literals_only"
+
+    @staticmethod
+    def _formula_guard_response(mode: str, blocked: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Return a compact, structured confirmation_required payload when formula writes are blocked."""
+        return sanitize_for_json({
+            "status": "confirmation_required",
+            "guard_mode": mode,
+            "blocked_count": len(blocked),
+            "blocked_cells": blocked[:10],
+            "instruction": (
+                "STOP and ask the user for approval before retrying with allow_formula_overwrite=true. "
+                "Briefly explain what you want to change and why."
+            ),
+        })
+
     async def write_cell(
         self,
         workbook_id: str,
@@ -970,6 +1004,7 @@ class ExcelController:
         value: Any,
         formatting: Optional[Dict[str, Any]] = None,
         number_format: Optional[str] = None,
+        allow_formula_overwrite: bool = False,
     ) -> Dict[str, Any]:
         """Write a properly typed value to a specific cell."""
         entry = self._get_entry(workbook_id)
@@ -978,11 +1013,28 @@ class ExcelController:
 
         wb = entry["workbook_object"]
         clean_value = sanitize_excel_write_value(value)
+        is_new_formula = isinstance(clean_value, str) and clean_value.startswith("=")
+
+        cell_obj = ws[clean_cell]
+        existing_val = cell_obj.value
+        existing_is_formula = isinstance(existing_val, str) and existing_val.startswith("=")
+        guard_mode = self.get_formula_guard_mode()
+        if existing_is_formula and not allow_formula_overwrite and guard_mode != "off":
+            if guard_mode == "strict" or not is_new_formula:
+                return self._formula_guard_response(
+                    guard_mode,
+                    [{
+                        "sheet": ws.title,
+                        "cell": clean_cell,
+                        "existing_formula": existing_val,
+                        "proposed_value": clean_value,
+                    }],
+                )
+
         formula_warnings: List[str] = []
-        if isinstance(clean_value, str) and clean_value.startswith("="):
+        if is_new_formula:
             clean_value = self._normalize_formula_sheet_refs(wb, clean_value)
             formula_warnings = self._inspect_formula_sheet_refs(wb, clean_value, cell_ref=clean_cell)
-        cell_obj = ws[clean_cell]
         cell_obj.value = clean_value
 
         if number_format:
@@ -1001,6 +1053,8 @@ class ExcelController:
             "value_type": type(clean_value).__name__,
             "number_format": cell_obj.number_format,
         }
+        if existing_is_formula:
+            result["formulas_updated"] = 1
         if formula_warnings:
             result["formula_warnings"] = formula_warnings
         return sanitize_for_json(result)
@@ -1014,6 +1068,7 @@ class ExcelController:
         formatting: Optional[Dict[str, Any]] = None,
         header_formatting: Optional[Dict[str, Any]] = None,
         number_format: Optional[str] = None,
+        allow_formula_overwrite: bool = False,
     ) -> Dict[str, Any]:
         """Write a 2D list of typed values to a worksheet range."""
         if not data:
@@ -1028,11 +1083,35 @@ class ExcelController:
         max_cols = 0
 
         wb = entry["workbook_object"]
+
+        # Atomic pre-write formula guard scan
+        guard_mode = self.get_formula_guard_mode()
+        if not allow_formula_overwrite and guard_mode != "off":
+            blocked: List[Dict[str, Any]] = []
+            for row_idx, row_data in enumerate(data):
+                for col_idx, raw_val in enumerate(row_data):
+                    existing = ws.cell(row=start_row + row_idx, column=start_col + col_idx).value
+                    if isinstance(existing, str) and existing.startswith("="):
+                        clean_val = sanitize_excel_write_value(raw_val)
+                        new_is_fml = isinstance(clean_val, str) and clean_val.startswith("=")
+                        if guard_mode == "strict" or not new_is_fml:
+                            blocked.append({
+                                "sheet": ws.title,
+                                "cell": f"{get_column_letter(start_col + col_idx)}{start_row + row_idx}",
+                                "existing_formula": existing,
+                                "proposed_value": clean_val,
+                            })
+            if blocked:
+                return self._formula_guard_response(guard_mode, blocked)
+
         formula_warnings: List[str] = []
+        formulas_updated = 0
         for row_idx, row_data in enumerate(data):
             max_cols = max(max_cols, len(row_data))
             for col_idx, raw_val in enumerate(row_data):
                 cell_obj = ws.cell(row=start_row + row_idx, column=start_col + col_idx)
+                if isinstance(cell_obj.value, str) and cell_obj.value.startswith("="):
+                    formulas_updated += 1
                 clean_val = sanitize_excel_write_value(raw_val)
                 if isinstance(clean_val, str) and clean_val.startswith("="):
                     clean_val = self._normalize_formula_sheet_refs(wb, clean_val)
@@ -1061,6 +1140,8 @@ class ExcelController:
             "rows_written": len(data),
             "columns_written": max_cols,
         }
+        if formulas_updated:
+            result["formulas_updated"] = formulas_updated
         if formula_warnings:
             result["formula_warnings"] = formula_warnings
         return sanitize_for_json(result)
@@ -1069,6 +1150,7 @@ class ExcelController:
         self,
         workbook_id: str,
         operations: List[Dict[str, Any]],
+        allow_formula_overwrite: bool = False,
     ) -> Dict[str, Any]:
         """Write multiple 2D ranges across one or more worksheets in a single call and save once."""
         if not operations:
@@ -1076,8 +1158,40 @@ class ExcelController:
 
         entry = self._get_entry(workbook_id)
         wb = entry["workbook_object"]
+
+        # Atomic pre-write formula guard scan across ALL operations before mutating any cell
+        guard_mode = self.get_formula_guard_mode()
+        if not allow_formula_overwrite and guard_mode != "off":
+            blocked: List[Dict[str, Any]] = []
+            for op in operations:
+                sheet_name = op.get("sheet_name")
+                start_cell = op.get("start_cell", "A1")
+                data = op.get("data")
+                if not data:
+                    raise ValueError(f"Each operation must include non-empty 'data' (sheet={sheet_name})")
+                ws = self._get_sheet(entry, sheet_name)
+                clean_start = validate_cell_ref(start_cell)
+                col_letter, start_row = coordinate_from_string(clean_start)
+                start_col = column_index_from_string(col_letter)
+                for row_idx, row_data in enumerate(data):
+                    for col_idx, raw_val in enumerate(row_data):
+                        existing = ws.cell(row=start_row + row_idx, column=start_col + col_idx).value
+                        if isinstance(existing, str) and existing.startswith("="):
+                            clean_val = sanitize_excel_write_value(raw_val)
+                            new_is_fml = isinstance(clean_val, str) and clean_val.startswith("=")
+                            if guard_mode == "strict" or not new_is_fml:
+                                blocked.append({
+                                    "sheet": ws.title,
+                                    "cell": f"{get_column_letter(start_col + col_idx)}{start_row + row_idx}",
+                                    "existing_formula": existing,
+                                    "proposed_value": clean_val,
+                                })
+            if blocked:
+                return self._formula_guard_response(guard_mode, blocked)
+
         results: List[Dict[str, Any]] = []
         all_warnings: List[str] = []
+        formulas_updated = 0
 
         for op in operations:
             sheet_name = op.get("sheet_name")
@@ -1099,6 +1213,8 @@ class ExcelController:
                 max_cols = max(max_cols, len(row_data))
                 for col_idx, raw_val in enumerate(row_data):
                     cell_obj = ws.cell(row=start_row + row_idx, column=start_col + col_idx)
+                    if isinstance(cell_obj.value, str) and cell_obj.value.startswith("="):
+                        formulas_updated += 1
                     clean_val = sanitize_excel_write_value(raw_val)
                     if isinstance(clean_val, str) and clean_val.startswith("="):
                         clean_val = self._normalize_formula_sheet_refs(wb, clean_val)
@@ -1131,6 +1247,8 @@ class ExcelController:
             "operations_completed": len(results),
             "results": results,
         }
+        if formulas_updated:
+            out["formulas_updated"] = formulas_updated
         if all_warnings:
             out["formula_warnings"] = all_warnings
         return sanitize_for_json(out)

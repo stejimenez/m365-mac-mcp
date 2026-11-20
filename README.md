@@ -135,6 +135,7 @@ This server was developed, benchmarked, and end-to-end verified on the following
 | --- | --- | --- |
 | `OFFICE_MCP_PROFILE` | `full` | Comma-separated, case-insensitive tool profile filter (see table below). |
 | `OFFICE_MCP_LIVE_SYNC` | `auto` | `auto` (reloads open saved Excel workbooks with view restore on `save_workbook`) or `off`. |
+| `OFFICE_MCP_FORMULA_GUARD` | `literals_only` | Protects existing Excel formulas from accidental overwrites: `literals_only` (default), `strict`, or `off`. |
 | `OFFICE365_MCP_LOG_LEVEL` | `INFO` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`). All logs go to `stderr`. |
 | `OFFICE365_MCP_APPLESCRIPT_TIMEOUT` | `30.0` | Timeout in seconds for each `osascript` call. |
 | `OFFICE365_MCP_ENABLE_APPLESCRIPT` | `true` | Enable or disable AppleScript bridge (`true`/`false`). |
@@ -167,6 +168,14 @@ Controls how `save_workbook` behaves when the target `.xlsx`/`.xlsm` file is alr
 - **`off`:** Never checks or touches live Excel during `save_workbook`.
 
 > **Note on `excel_live_close`:** `OFFICE_MCP_LIVE_SYNC=auto` applies to file-level `save_workbook`. If you explicitly call `excel_live_close`, Excel will close the workbook and leave it closed—simply omit `excel_live_close` if you want the workbook to stay open in Excel.
+
+### Formula Overwrite Guard (`OFFICE_MCP_FORMULA_GUARD`)
+
+Prevents AI models from silently destroying live Excel formulas across all 6 write tools (`write_cell`, `write_range`, `batch_write_ranges`, `excel_live_write_cell`, `excel_live_write_range`, `excel_live_batch_write_cells`). Values are case-insensitive:
+
+- **`literals_only` *(default)*:** Atomically blocks **Formula → Hardcoded Literal / Blank (`None` / `""`)** overwrites before modifying any cell and returns `status: "confirmation_required"` with the blocked cells so the model stops and asks for your approval (retrying with `allow_formula_overwrite=true` only if approved). Legitimate **Formula → New Formula** updates are allowed and reported via `"formulas_updated": N`.
+- **`strict`:** Blocks **any** overwrite of an existing formula cell (including Formula → Formula) unless `allow_formula_overwrite=true` — ideal for finalized valuation/board models where only input cells should be edited.
+- **`off`:** Disables the pre-write formula guard.
 
 ---
 
@@ -377,8 +386,8 @@ Run the unit and integration test suite with the project virtual environment:
 .venv/bin/pytest tests/test_basic.py tests/test_word_excel_rw.py -v
 ```
 
-This runs **25 tests** covering:
-- Excel file-level read/write, batch formatting, named styles, tables, data validation, formula sheet-reference auto-quoting & auditing, and `OFFICE_MCP_LIVE_SYNC` view-restore / unsaved-edits protection.
+This runs **27 tests** covering:
+- Excel file-level read/write, batch formatting, named styles, tables, data validation, formula sheet-reference auto-quoting & auditing, `OFFICE_MCP_FORMULA_GUARD` (`literals_only`/`strict`/`off`), and `OFFICE_MCP_LIVE_SYNC` view-restore / unsaved-edits protection.
 - Word file-level creation, rich paragraph/table styling, search & replace, and `.docx` XML attributes (`w:tblHeader`, borders, shading, widths).
 - Composable `OFFICE_MCP_PROFILE` filtering, compact JSON responses, stripped schema noise, sparse A1 formula maps, and trimmed blank cells.
 - Hardened AppleScript generation and parsing for Excel `16.115` and Word `16.115.1`.

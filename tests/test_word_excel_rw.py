@@ -1490,3 +1490,110 @@ async def test_batch_format_workbook_accepts_llm_style_aliases_and_warns_unknown
     assert ws["B2"].number_format == '$#,##0;($#,##0);"-"'
     assert ws["B3"].number_format == "0.0%"
     wb.close()
+
+
+@pytest.mark.asyncio
+async def test_office_mcp_formula_guard_file_and_live(monkeypatch):
+    """Verify OFFICE_MCP_FORMULA_GUARD (literals_only default | strict | off) across all 6 Excel write tools."""
+    from controllers.excel_controller import ExcelController
+
+    # 1. Case-insensitive mode parsing + fallback
+    monkeypatch.delenv("OFFICE_MCP_FORMULA_GUARD", raising=False)
+    assert ExcelController.get_formula_guard_mode() == "literals_only"
+    assert ExcelController.get_formula_guard_mode("STRICT") == "strict"
+    assert ExcelController.get_formula_guard_mode("Off") == "off"
+    assert ExcelController.get_formula_guard_mode("bogus") == "literals_only"
+
+    # 2. File-level guard in default 'literals_only' mode
+    created = await server.create_workbook(title="Guard Test", sheet_name="Model")
+    wb_id = created["workbook_id"]
+    await server.write_range(
+        wb_id,
+        sheet_name="Model",
+        start_cell="A1",
+        data=[
+            ["Item", "FY24", "FY25"],
+            ["Rev", 100, 120],
+            ["Total", "=B2+C2", "=C2*2"],
+        ],
+    )
+
+    # Formula -> hardcoded literal BLOCKED (workbook untouched)
+    blk1 = await server.write_cell(wb_id, "Model", "B3", 220)
+    assert blk1["status"] == "confirmation_required"
+    assert blk1["guard_mode"] == "literals_only"
+    assert blk1["blocked_count"] == 1
+    assert blk1["blocked_cells"][0]["existing_formula"] == "=B2+C2"
+    assert (await server.read_cell(wb_id, "B3", sheet_name="Model"))["formula"] == "=B2+C2"
+
+    # Formula -> None (clearing) ALSO BLOCKED in literals_only
+    blk_none = await server.write_cell(wb_id, "Model", "B3", None)
+    assert blk_none["status"] == "confirmation_required"
+
+    # Formula -> new Formula ALLOWED in literals_only + reports formulas_updated=1
+    ok_fml = await server.write_cell(wb_id, "Model", "B3", "=SUM(B2:C2)")
+    assert ok_fml["status"] == "success"
+    assert ok_fml["formulas_updated"] == 1
+
+    # Atomic range block: writing A3:C3 with a literal over B3 leaves A3 untouched too
+    blk_rng = await server.write_range(wb_id, "Model", "A3", [["CHANGED_LABEL", 999, "=C2*3"]])
+    assert blk_rng["status"] == "confirmation_required"
+    assert (await server.read_cell(wb_id, "A3", sheet_name="Model"))["value"] == "Total"
+
+    # Atomic batch_write_ranges block
+    blk_batch = await server.batch_write_ranges(
+        wb_id,
+        operations=[{"sheet_name": "Model", "start_cell": "C3", "data": [[240]]}],
+    )
+    assert blk_batch["status"] == "confirmation_required"
+    assert (await server.read_cell(wb_id, "C3", sheet_name="Model"))["formula"] == "=C2*2"
+
+    # Explicit allow_formula_overwrite=True permits overwrite
+    ok_override = await server.write_cell(wb_id, "Model", "B3", 220, allow_formula_overwrite=True)
+    assert ok_override["status"] == "success"
+    assert ok_override["formulas_updated"] == 1
+
+    # 3. 'strict' mode also blocks Formula -> new Formula
+    monkeypatch.setenv("OFFICE_MCP_FORMULA_GUARD", "STRICT")
+    blk_strict = await server.write_cell(wb_id, "Model", "C3", "=C2*3")
+    assert blk_strict["status"] == "confirmation_required"
+    assert blk_strict["guard_mode"] == "strict"
+
+    # 4. 'off' mode allows everything
+    monkeypatch.setenv("OFFICE_MCP_FORMULA_GUARD", "off")
+    ok_off = await server.write_cell(wb_id, "Model", "C3", 240)
+    assert ok_off["status"] == "success"
+    await server.close_workbook(wb_id)
+
+    # 5. Live Excel writers parse BLOCKED responses & pass guardMode arg cleanly
+    monkeypatch.setenv("OFFICE_MCP_FORMULA_GUARD", "literals_only")
+    us, rs, gs = chr(31), chr(30), chr(29)
+    captured_args = []
+
+    async def _fake_live(script, args=None, timeout=30.0):
+        captured_args.append(list(args or []))
+        if "BLOCKED" in script and len(args or []) == 8:
+            return f"BLOCKED{us}Model.xlsx{us}Balance Sheet{us}=B23+'Income Statement'!C15-C22"
+        if "BLOCKED" in script and len(args or []) == 7:
+            return f"BLOCKED{gs}Balance Sheet{us}C23{us}=B23+1{us}-5034"
+        return f"BLOCKED{gs}Balance Sheet{us}C23{us}=B23+1{us}-5034"
+
+    monkeypatch.setattr(server.applescript, "execute_applescript", _fake_live)
+
+    l1 = await server.excel_live_write_cell("C23", -5034, sheet_name="Balance Sheet")
+    assert l1["status"] == "confirmation_required"
+    assert l1["blocked_cells"][0]["cell"] == "C23"
+    assert captured_args[-1][7] == "literals_only"
+
+    l2 = await server.excel_live_write_range("C23", [[-5034]], sheet_name="Balance Sheet")
+    assert l2["status"] == "confirmation_required"
+    assert captured_args[-1][6] == "literals_only"
+
+    l3 = await server.excel_live_batch_write_cells({"C23": -5034}, sheet_name="Balance Sheet")
+    assert l3["status"] == "confirmation_required"
+    assert captured_args[-1][3] == "literals_only"
+
+    # Verify check_office_status exposes formula_guard_mode
+    st = await server.check_office_status()
+    assert st["profile"]["formula_guard_mode"] == "literals_only"
+    assert st["profile"]["available_formula_guard_modes"] == ["literals_only", "strict", "off"]

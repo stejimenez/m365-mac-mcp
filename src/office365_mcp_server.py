@@ -878,6 +878,7 @@ async def write_cell(
     value: Any,
     formatting: Optional[Dict[str, Any]] = None,
     number_format: Optional[str] = None,
+    allow_formula_overwrite: bool = False,
 ) -> Dict[str, Any]:
     """Write a properly typed value (bool, int, float, str, None) to a cell."""
     try:
@@ -888,6 +889,7 @@ async def write_cell(
             value=value,
             formatting=formatting,
             number_format=number_format,
+            allow_formula_overwrite=allow_formula_overwrite,
         )
     except Exception as exc:
         return _error_response("write_cell", exc)
@@ -902,6 +904,7 @@ async def write_range(
     formatting: Optional[Dict[str, Any]] = None,
     header_formatting: Optional[Dict[str, Any]] = None,
     number_format: Optional[str] = None,
+    allow_formula_overwrite: bool = False,
 ) -> Dict[str, Any]:
     """Write a 2D array/matrix of typed values starting at start_cell."""
     try:
@@ -913,6 +916,7 @@ async def write_range(
             formatting=formatting,
             header_formatting=header_formatting,
             number_format=number_format,
+            allow_formula_overwrite=allow_formula_overwrite,
         )
     except Exception as exc:
         return _error_response("write_range", exc)
@@ -1035,11 +1039,14 @@ async def format_worksheet(
 async def batch_write_ranges(
     workbook_id: str,
     operations: List[Dict[str, Any]],
+    allow_formula_overwrite: bool = False,
 ) -> Dict[str, Any]:
     """Write multiple 2D ranges across sheets in one call. operations=[{'sheet_name':'...','start_cell':'A1','data':[[...]],'number_format':'...','formatting':{...}}]."""
     try:
         return await excel.batch_write_ranges(
-            workbook_id=workbook_id, operations=operations
+            workbook_id=workbook_id,
+            operations=operations,
+            allow_formula_overwrite=allow_formula_overwrite,
         )
     except Exception as exc:
         return _error_response("batch_write_ranges", exc)
@@ -1398,6 +1405,7 @@ async def excel_live_write_cell(
     is_formula: bool = False,
     number_format: Optional[str] = None,
     recalculate: bool = True,
+    allow_formula_overwrite: bool = False,
 ) -> Dict[str, Any]:
     """Write a typed value or formula to a cell in a targeted live Excel workbook & sheet."""
     try:
@@ -1409,6 +1417,7 @@ async def excel_live_write_cell(
             is_formula=is_formula,
             number_format=number_format,
             recalculate=recalculate,
+            allow_formula_overwrite=allow_formula_overwrite,
         )
     except Exception as exc:
         return _error_response("excel_live_write_cell", exc)
@@ -1422,6 +1431,7 @@ async def excel_live_write_range(
     workbook_name: Optional[str] = None,
     number_format: Optional[str] = None,
     recalculate: bool = True,
+    allow_formula_overwrite: bool = False,
 ) -> Dict[str, Any]:
     """Write a 2D array of values/formulas into a targeted live Excel workbook & sheet."""
     try:
@@ -1432,6 +1442,7 @@ async def excel_live_write_range(
             workbook_name=workbook_name,
             number_format=number_format,
             recalculate=recalculate,
+            allow_formula_overwrite=allow_formula_overwrite,
         )
     except Exception as exc:
         return _error_response("excel_live_write_range", exc)
@@ -1443,6 +1454,7 @@ async def excel_live_batch_write_cells(
     sheet_name: Optional[str] = None,
     workbook_name: Optional[str] = None,
     recalculate: bool = True,
+    allow_formula_overwrite: bool = False,
 ) -> Dict[str, Any]:
     """Write multiple non-contiguous cells/formulas in ONE live Excel call and recalculate once.
 
@@ -1454,6 +1466,7 @@ async def excel_live_batch_write_cells(
             sheet_name=sheet_name,
             workbook_name=workbook_name,
             recalculate=recalculate,
+            allow_formula_overwrite=allow_formula_overwrite,
         )
     except Exception as exc:
         return _error_response("excel_live_batch_write_cells", exc)
@@ -1720,6 +1733,8 @@ async def check_office_status() -> Dict[str, Any]:
                 "available_profiles": list(_AVAILABLE_PROFILES),
                 "live_sync_mode": excel.get_live_sync_mode(),
                 "available_live_sync_modes": ["auto", "off"],
+                "formula_guard_mode": excel.get_formula_guard_mode(),
+                "available_formula_guard_modes": ["literals_only", "strict", "off"],
             },
             "applications": versions,
             "active_in_memory": {
@@ -1746,7 +1761,9 @@ async def get_server_status() -> str:
 if __name__ == "__main__":
     logger.info(
         f"Starting Microsoft 365 for Mac MCP (m365-mac-mcp, stdio) — profile='{_ACTIVE_PROFILE_LABEL}', "
-        f"tools={len(_REGISTERED_TOOL_NAMES)}, live_sync='{excel.get_live_sync_mode()}'. "
-        f"Valid OFFICE_MCP_PROFILE: {', '.join(_AVAILABLE_PROFILES)}; OFFICE_MCP_LIVE_SYNC: auto | off."
+        f"tools={len(_REGISTERED_TOOL_NAMES)}, live_sync='{excel.get_live_sync_mode()}', "
+        f"formula_guard='{excel.get_formula_guard_mode()}'. "
+        f"Valid OFFICE_MCP_PROFILE: {', '.join(_AVAILABLE_PROFILES)}; "
+        f"OFFICE_MCP_LIVE_SYNC: auto | off; OFFICE_MCP_FORMULA_GUARD: literals_only | strict | off."
     )
     mcp.run()

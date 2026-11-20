@@ -19,6 +19,7 @@ Key design principles:
 
 import asyncio
 import json
+import os
 import plistlib
 import re
 from pathlib import Path
@@ -1483,6 +1484,35 @@ class AppleScriptBridge:
 
         return formula
 
+    @staticmethod
+    def get_formula_guard_mode(raw: Optional[str] = None) -> str:
+        """Parse OFFICE_MCP_FORMULA_GUARD ('literals_only' default | 'strict' | 'off'), case-insensitive."""
+        val = (
+            os.environ.get("OFFICE_MCP_FORMULA_GUARD", "literals_only")
+            if raw is None
+            else raw
+        ).strip().lower()
+        if not val or val in ("literals_only", "literals", "literal", "default"):
+            return "literals_only"
+        if val in ("strict", "all", "on"):
+            return "strict"
+        if val in ("off", "false", "0", "no", "none", "disabled"):
+            return "off"
+        return "literals_only"
+
+    @staticmethod
+    def _formula_guard_response(mode: str, blocked: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return sanitize_for_json({
+            "status": "confirmation_required",
+            "guard_mode": mode,
+            "blocked_count": len(blocked),
+            "blocked_cells": blocked[:10],
+            "instruction": (
+                "STOP and ask the user for approval before retrying with allow_formula_overwrite=true. "
+                "Briefly explain what you want to change and why."
+            ),
+        })
+
     async def write_live_excel_cell(
         self,
         cell_ref: str,
@@ -1492,9 +1522,11 @@ class AppleScriptBridge:
         is_formula: bool = False,
         number_format: Optional[str] = None,
         recalculate: bool = True,
+        allow_formula_overwrite: bool = False,
     ) -> Dict[str, Any]:
         """Write a typed value or formula into a specific cell of a targeted live Excel workbook/sheet."""
         clean_cell = validate_cell_ref(cell_ref)
+        guard_mode = "off" if allow_formula_overwrite else self.get_formula_guard_mode()
 
         # Determine explicit type tag so AppleScript preserves booleans, numbers, nulls, formulas, strings
         if value is None:
@@ -1532,6 +1564,8 @@ class AppleScriptBridge:
             set valStr to item 5 of argv
             set numFmt to item 6 of argv
             set doCalc to (item 7 of argv) is "true"
+            set guardMode to item 8 of argv
+            set us to character id 31
             tell application "Microsoft Excel"
                 if (count of workbooks) is 0 then
                     error "No open Excel workbooks"
@@ -1550,6 +1584,24 @@ class AppleScriptBridge:
                 set display alerts to false
                 try
                     set targetCell to range cellRef of sh
+                    set fmlUpdated to 0
+                    if guardMode is not "off" then
+                        set existingFml to ""
+                        try
+                            set rawExisting to formula of targetCell
+                            if rawExisting is not missing value then
+                                set existingFml to rawExisting as text
+                            end if
+                        end try
+                        if (length of existingFml) > 0 and (character 1 of existingFml is "=") then
+                            if guardMode is "strict" or valType is not "formula" then
+                                set display alerts to prevAlerts
+                                return "BLOCKED" & us & (name of wb) & us & (name of sh) & us & existingFml
+                            else
+                                set fmlUpdated to 1
+                            end if
+                        end if
+                    end if
                     if valType is "null" then
                         clear contents targetCell
                     else if valType is "formula" then
@@ -1578,7 +1630,7 @@ class AppleScriptBridge:
                         set evalText to evalVal as text
                     end if
                     set display alerts to prevAlerts
-                    return (name of wb) & (character id 31) & (name of sh) & (character id 31) & evalText
+                    return (name of wb) & us & (name of sh) & us & evalText & us & (fmlUpdated as text)
                 on error errMsg number errNum
                     set display alerts to prevAlerts
                     error errMsg number errNum
@@ -1596,11 +1648,22 @@ class AppleScriptBridge:
                 val_str,
                 number_format or "",
                 "true" if recalculate else "false",
+                guard_mode,
             ],
             timeout=20.0,
         )
         parts = raw.split(_US)
-        return sanitize_for_json({
+        if parts and parts[0] == "BLOCKED":
+            return self._formula_guard_response(
+                guard_mode,
+                [{
+                    "sheet": parts[2] if len(parts) > 2 else (sheet_name or ""),
+                    "cell": clean_cell,
+                    "existing_formula": parts[3] if len(parts) > 3 else "",
+                    "proposed_value": value,
+                }],
+            )
+        out: Dict[str, Any] = {
             "status": "success",
             "workbook_name": parts[0] if parts else "",
             "sheet_name": parts[1] if len(parts) > 1 else "",
@@ -1608,8 +1671,10 @@ class AppleScriptBridge:
             "written_value": value,
             "evaluated_value": parts[2] if len(parts) > 2 else "",
             "number_format": number_format,
-            "method": "applescript",
-        })
+        }
+        if len(parts) > 3 and parts[3] == "1":
+            out["formulas_updated"] = 1
+        return sanitize_for_json(out)
 
     async def write_live_excel_range(
         self,
@@ -1619,11 +1684,13 @@ class AppleScriptBridge:
         workbook_name: Optional[str] = None,
         number_format: Optional[str] = None,
         recalculate: bool = True,
+        allow_formula_overwrite: bool = False,
     ) -> Dict[str, Any]:
         """Write a 2D array into a targeted live Excel workbook & worksheet."""
         if not data:
             raise ValueError("data must be a non-empty 2D list")
         clean_start = validate_cell_ref(start_cell)
+        guard_mode = "off" if allow_formula_overwrite else self.get_formula_guard_mode()
 
         # If any cell contains a cross-sheet formula, fetch sheet names once to auto-quote & guard
         has_cross_sheet_formula = any(
@@ -1672,11 +1739,15 @@ class AppleScriptBridge:
             set payload to item 4 of argv
             set numFmt to item 5 of argv
             set doCalc to (item 6 of argv) is "true"
+            set guardMode to item 7 of argv
             set us to character id 31
             set rs to character id 30
+            set gs to character id 29
 
+            set prevDelims to AppleScript's text item delimiters
             set AppleScript's text item delimiters to rs
             set rowList to text items of payload
+            set AppleScript's text item delimiters to prevDelims
 
             tell application "Microsoft Excel"
                 if (count of workbooks) is 0 then
@@ -1697,10 +1768,58 @@ class AppleScriptBridge:
                 set startR to first row index of anchorCell
                 set startC to first column index of anchorCell
 
+                set fmlUpdated to 0
+                if guardMode is not "off" then
+                    set blockedRows to {}
+                    set rIdx to 0
+                    repeat with rStr in rowList
+                        set AppleScript's text item delimiters to us
+                        set cellList to text items of (rStr as text)
+                        set AppleScript's text item delimiters to prevDelims
+                        set cIdx to 0
+                        repeat with entry in cellList
+                            set entryStr to entry as text
+                            set tagChar to ""
+                            set rawVal to ""
+                            if (length of entryStr) >= 2 then
+                                set tagChar to character 1 of entryStr
+                                if (length of entryStr) > 2 then
+                                    set rawVal to text 3 thru -1 of entryStr
+                                end if
+                            end if
+                            set targetCell to cell (startC + cIdx) of row (startR + rIdx) of sh
+                            set existingFml to ""
+                            try
+                                set rawEx to formula of targetCell
+                                if rawEx is not missing value then
+                                    set existingFml to rawEx as text
+                                end if
+                            end try
+                            if (length of existingFml) > 0 and (character 1 of existingFml is "=") then
+                                if guardMode is "strict" or tagChar is not "F" then
+                                    set cellAddr to get address of targetCell without row absolute and column absolute
+                                    set end of blockedRows to ((name of sh) & us & cellAddr & us & existingFml & us & rawVal)
+                                else
+                                    set fmlUpdated to fmlUpdated + 1
+                                end if
+                            end if
+                            set cIdx to cIdx + 1
+                        end repeat
+                        set rIdx to rIdx + 1
+                    end repeat
+                    if (count of blockedRows) > 0 then
+                        set AppleScript's text item delimiters to rs
+                        set joinedBlocked to blockedRows as text
+                        set AppleScript's text item delimiters to prevDelims
+                        return "BLOCKED" & gs & joinedBlocked
+                    end if
+                end if
+
                 set rIdx to 0
                 repeat with rStr in rowList
                     set AppleScript's text item delimiters to us
                     set cellList to text items of (rStr as text)
+                    set AppleScript's text item delimiters to prevDelims
                     set cIdx to 0
                     repeat with entry in cellList
                         set entryStr to entry as text
@@ -1739,7 +1858,7 @@ class AppleScriptBridge:
                 if doCalc then
                     calculate
                 end if
-                return (name of wb) & us & (name of sh)
+                return (name of wb) & us & (name of sh) & us & (fmlUpdated as text)
             end tell
         end run
         """
@@ -1752,19 +1871,37 @@ class AppleScriptBridge:
                 payload,
                 number_format or "",
                 "true" if recalculate else "false",
+                guard_mode,
             ],
             timeout=45.0,
         )
+        if raw.startswith(f"BLOCKED{_GS}"):
+            blocked_raw = raw.split(_GS, 1)[1]
+            blocked_list: List[Dict[str, Any]] = []
+            for row_s in blocked_raw.split(_RS):
+                if not row_s:
+                    continue
+                p = row_s.split(_US)
+                if len(p) >= 3:
+                    blocked_list.append({
+                        "sheet": p[0],
+                        "cell": p[1],
+                        "existing_formula": p[2],
+                        "proposed_value": p[3] if len(p) > 3 else "",
+                    })
+            return self._formula_guard_response(guard_mode, blocked_list)
         parts = raw.split(_US)
-        return {
+        out: Dict[str, Any] = {
             "status": "success",
             "workbook_name": parts[0] if parts else "",
             "sheet_name": parts[1] if len(parts) > 1 else "",
             "start_cell": clean_start,
             "rows_written": len(data),
             "columns_written": max_cols,
-            "method": "applescript",
         }
+        if len(parts) > 2 and parts[2].isdigit() and int(parts[2]) > 0:
+            out["formulas_updated"] = int(parts[2])
+        return out
 
     async def batch_write_live_excel_cells(
         self,
@@ -1772,6 +1909,7 @@ class AppleScriptBridge:
         sheet_name: Optional[str] = None,
         workbook_name: Optional[str] = None,
         recalculate: bool = True,
+        allow_formula_overwrite: bool = False,
     ) -> Dict[str, Any]:
         """Write multiple non-contiguous cells/formulas in ONE osascript call and recalculate once.
 
@@ -1842,12 +1980,14 @@ class AppleScriptBridge:
             it["_encoded_value"] = vstr
             encoded_rows.append(_US.join([it["sheet_name"], it["cell"], vtype, vstr, it["number_format"]]))
 
+        guard_mode = "off" if allow_formula_overwrite else self.get_formula_guard_mode()
         payload = _RS.join(encoded_rows)
         script = """
         on run argv
             set wbTarget to item 1 of argv
             set payload to item 2 of argv
             set doCalc to (item 3 of argv) is "true"
+            set guardMode to item 4 of argv
             set us to character id 31
             set rs to character id 30
             set gs to character id 29
@@ -1871,6 +2011,49 @@ class AppleScriptBridge:
                 set prevAlerts to display alerts
                 set display alerts to false
                 try
+                    set fmlUpdated to 0
+                    if guardMode is not "off" then
+                        set blockedRows to {}
+                        repeat with rStr in rowList
+                            set AppleScript's text item delimiters to us
+                            set parts to text items of (rStr as text)
+                            set AppleScript's text item delimiters to prevDelims
+                            if (count of parts) >= 5 then
+                                set shName to item 1 of parts
+                                set cellRef to item 2 of parts
+                                set tagChar to item 3 of parts
+                                set rawVal to item 4 of parts
+                                if shName is "" then
+                                    set sh to active sheet of wb
+                                else
+                                    set sh to worksheet shName of wb
+                                end if
+                                set targetCell to range cellRef of sh
+                                set existingFml to ""
+                                try
+                                    set rawEx to formula of targetCell
+                                    if rawEx is not missing value then
+                                        set existingFml to rawEx as text
+                                    end if
+                                end try
+                                if (length of existingFml) > 0 and (character 1 of existingFml is "=") then
+                                    if guardMode is "strict" or tagChar is not "F" then
+                                        set end of blockedRows to ((name of sh) & us & cellRef & us & existingFml & us & rawVal)
+                                    else
+                                        set fmlUpdated to fmlUpdated + 1
+                                    end if
+                                end if
+                            end if
+                        end repeat
+                        if (count of blockedRows) > 0 then
+                            set display alerts to prevAlerts
+                            set AppleScript's text item delimiters to rs
+                            set joinedBlocked to blockedRows as text
+                            set AppleScript's text item delimiters to prevDelims
+                            return "BLOCKED" & gs & joinedBlocked
+                        end if
+                    end if
+
                     repeat with rStr in rowList
                         set AppleScript's text item delimiters to us
                         set parts to text items of (rStr as text)
@@ -1938,17 +2121,33 @@ class AppleScriptBridge:
             set AppleScript's text item delimiters to rs
             set joinedRows to outRows as text
             set AppleScript's text item delimiters to prevDelims
-            return wbName & gs & joinedRows
+            return wbName & gs & joinedRows & gs & (fmlUpdated as text)
         end run
         """
         raw = await self.execute_applescript(
             script,
-            args=[workbook_name or "", payload, "true" if recalculate else "false"],
+            args=[workbook_name or "", payload, "true" if recalculate else "false", guard_mode],
             timeout=45.0,
         )
+        if raw.startswith(f"BLOCKED{_GS}"):
+            blocked_raw = raw.split(_GS, 1)[1]
+            blocked_list: List[Dict[str, Any]] = []
+            for row_s in blocked_raw.split(_RS):
+                if not row_s:
+                    continue
+                p = row_s.split(_US)
+                if len(p) >= 3:
+                    blocked_list.append({
+                        "sheet": p[0],
+                        "cell": p[1],
+                        "existing_formula": p[2],
+                        "proposed_value": p[3] if len(p) > 3 else "",
+                    })
+            return self._formula_guard_response(guard_mode, blocked_list)
         sections = raw.split(_GS)
         wb_name = sections[0] if sections else (workbook_name or "")
         rows_raw = sections[1] if len(sections) > 1 else ""
+        fml_updated_str = sections[2] if len(sections) > 2 else "0"
 
         results: List[Dict[str, Any]] = []
         if rows_raw:
@@ -1963,14 +2162,16 @@ class AppleScriptBridge:
                         "evaluated_value": parts[2],
                     })
 
-        return sanitize_for_json({
+        out: Dict[str, Any] = {
             "status": "success",
             "workbook_name": wb_name,
             "cells_written": len(results),
             "recalculated": recalculate,
             "results": results,
-            "method": "applescript",
-        })
+        }
+        if fml_updated_str.isdigit() and int(fml_updated_str) > 0:
+            out["formulas_updated"] = int(fml_updated_str)
+        return sanitize_for_json(out)
 
     async def batch_read_live_excel_ranges(
         self,
