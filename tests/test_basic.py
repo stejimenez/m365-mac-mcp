@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Basic test script for Office 365 MCP Server
+Basic test script for Microsoft 365 for Mac MCP (m365-mac-mcp)
 Tests core functionality without requiring full MCP setup.
 """
 
@@ -104,7 +104,7 @@ def test_controllers():
 
 def main():
     """Run all tests."""
-    print("Office 365 MCP Server - Basic Tests")
+    print("Microsoft 365 for Mac MCP (m365-mac-mcp) - Basic Tests")
     print("=" * 40)
     
     tests = [

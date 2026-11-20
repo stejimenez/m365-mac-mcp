@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for Excel functionality in Office 365 MCP Server
+Test script for Excel functionality in Microsoft 365 for Mac MCP (m365-mac-mcp)
 """
 
 import asyncio

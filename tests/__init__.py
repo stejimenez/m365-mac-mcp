@@ -1,3 +1,3 @@
 """
-Test suite for Office 365 MCP Server
+Test suite for Microsoft 365 for Mac MCP (m365-mac-mcp).
 """

@@ -1,5 +1,5 @@
 """
-PowerPoint Controller for Office 365 MCP Server
+PowerPoint Controller for Microsoft 365 for Mac MCP (m365-mac-mcp).
 Handles all PowerPoint automation operations on macOS.
 """
 
@@ -409,7 +409,7 @@ class PowerPointController:
                 raise ValueError(f"Presentation {presentation_id} not found")
             
             prs = self.active_presentations[presentation_id]["pptx_object"]
-            save_path = Path(file_path)
+            save_path = Path(file_path).expanduser().resolve()
             
             # Ensure directory exists
             save_path.parent.mkdir(parents=True, exist_ok=True)

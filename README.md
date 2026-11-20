@@ -1,79 +1,180 @@
-# macOS Office 365 MCP Server
+# Microsoft 365 for Mac MCP
 
-A Model Context Protocol (MCP) server that enables AI assistants to create and manipulate Microsoft Office documents (PowerPoint, Word, and Excel) on macOS. This is a Proof of Concept and a personal project that is not an official MCP Server.  Let me know if you have any issues.  
+*Dual-mode (file-level + live AppleScript) MCP server for Microsoft Excel, Word, and PowerPoint — verified on **macOS 27.x** & **Microsoft Office 16.x** (`m365-mac-mcp`).*
 
-LinkedIn: https://www.linkedin.com/in/bluhmadam/ 
+![macOS](https://img.shields.io/badge/macOS-27.x%20(Apple%20Silicon)-000000?logo=apple)
+![Microsoft Office](https://img.shields.io/badge/Microsoft%20Office%20for%20Mac-16.x-D83B01?logo=microsoftoffice)
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![MCP](https://img.shields.io/badge/MCP-SDK%20v1%20%7C%20v2-4B32C3)
+![License](https://img.shields.io/badge/License-MIT-green)
+
+A Model Context Protocol (MCP) server (`m365-mac-mcp`) that enables AI assistants to create, inspect, format, audit, and automate Microsoft Office documents (**Excel**, **Word**, and **PowerPoint**) on macOS.
+
+This server combines **fast file-level manipulation** (`openpyxl`, `python-docx`, `python-pptx`) with **hardened live macOS Office automation** via AppleScript (`osascript`) for real-time Excel formula recalculation, live Word editing, and seamless view-preserving sync with open workbooks.
+
+> **Author:** Sterling Jimenez, Ph.D. (stejimenez@gmail.com)  
+> This is a personal open-source project and is not an official Microsoft MCP Server.
+
+---
+
+## Highlights & Architecture
+
+- **Dual-Mode Engine (File-Level + Live App):**
+  - **File-level tools** (`openpyxl`, `python-docx`, `python-pptx`) handle bulk reads/writes, multi-sheet batch formatting, charts, Excel tables, data validation, named styles, formula auditing, and rich `.docx` table/paragraph styling without blocking the UI.
+  - **Live-app tools** (`excel_live_*`, `word_live_*`) drive Microsoft Excel and Microsoft Word directly via serialized, timeout-guarded AppleScript (`osascript -` + `argv`) for real Excel formula evaluation, live edits, custom views, invalid-data circles, and PDF/RTF/TXT export.
+- **Token-Efficient by Design (Zero Loss of Exactitude):**
+  - **Compact JSON wire responses** (`separators=(",", ":")`, `structured_output=False`) cut 2D spreadsheet response payloads by **46%–74%** with zero data loss.
+  - **Sparse A1 formula maps** (`{"D2": "=(C2/B2)-1", ...}`) in `inspect_workbook`, `excel_live_read_range`, and `excel_live_batch_read_ranges` eliminate duplicated 2D matrices while making formula coordinates explicit.
+  - **Deduplicated Word reads (`read_document`):** Omits duplicate `full_text` (opt-in via `include_full_text=True`), duplicate `headings`, default `"style": "Normal"`, and empty metadata/tables — cutting Word read tokens by **~40%–50%** with zero data loss.
+  - **Compacted MCP tool schemas** strip Pydantic `"title"`, redundant `"default": null`, and verbose nullable `anyOf` wrappers (**-35%** per-turn schema overhead) while preserving full runtime validation.
+  - **Trimmed trailing blanks & omitted empty boilerplate** keep responses tight without hiding non-empty data or truncation flags.
+- **Live Excel Auto-Sync (`OFFICE_MCP_LIVE_SYNC=auto`):** When `save_workbook` writes to a file already open in Excel with no unsaved edits, it automatically captures the window bounds, active sheet, zoom, scroll position, and selection, reloads the saved file in Excel, and restores your exact view. If you have unsaved manual edits in Excel, it refuses to overwrite so your work is never lost.
+- **Composable Tool Profiles (`OFFICE_MCP_PROFILE`):** Trim the exposed toolset (e.g., `excel,compact`, `excel`, `word`, `word,powerpoint`) to cut schema token overhead by up to 60%+ on local LLMs (LM Studio / Bionic).
+- **Hardened for Modern macOS & Office for Mac:**
+  - Verified on macOS (Apple Silicon) with **Microsoft Excel 16.115** and **Microsoft Word 16.115.1**.
+  - Per-event-loop `asyncio.Lock` serialization around `osascript` calls prevents parallel AppleEvent races.
+  - Automatic quoting of spaced sheet names in formulas (e.g., `=Cash Flow!F15` → `='Cash Flow'!F15`) and pre-write validation prevents Excel modal dialogs and stray `xl/externalLinks`.
+  - Compatible with both **MCP SDK v2** and **MCP SDK v1**, with strict `stderr`-only logging so `stdio` JSON-RPC streams are never polluted.
+
+---
 
 ## Features
 
+### Excel (File-Level & Live App)
+- **Workbook & Sheet Management:** Create, open, close, save (`.xlsx`, `.xlsm`, `.csv`, `.pdf`), add/rename/delete/activate worksheets, and one-call `inspect_workbook`.
+- **Bulk & Batch Operations:** Read/write cells and ranges (with `include_formulas` / `evaluate_formulas` aliases), `batch_write_ranges`, `batch_format_workbook`, `excel_live_batch_read_ranges`, and `excel_live_batch_write_cells`.
+- **Financial-Model Styling & Formatting:**
+  - `format_range`, `format_worksheet`, `batch_format_workbook`, and `set_column_widths` (explicit widths or auto-fit with padding).
+  - Supports comma-separated multi-ranges (`"B2:F3, B6:F7"`), merged font/alignment/border preservation, per-side borders (`thin`, `medium`, `thick`, `double`, `dashed`, `dotted`, `none`), and `auto_color_financial_model=True` (blue inputs, black same-sheet formulas, green cross-sheet links).
+  - 16 built-in named cell style presets (`Normal`, `Good`, `Bad`, `Neutral`, `Input`, `Calculation`, `Check Cell`, `Linked Cell`, `Note`, `Output`, `Warning Text`, `Title`, `Heading 1`–`Heading 4`, `Total`) via `list_cell_styles` / `apply_cell_style`.
+- **Tables, Charts & Data Validation:**
+  - Native Excel Tables (`add_excel_table`, `update_excel_table_style`, `excel_live_update_table_style`) with `TableStyleLight*` / `Medium*` / `Dark*` and banded row/column toggles.
+  - Charts (`create_chart`: bar, column, line, pie).
+  - Data validation rules (`add_data_validation`, `list_data_validations`, `clear_data_validations`) plus live invalid-data circles (`excel_live_circle_invalid`).
+- **Formula Auditing & Live Recalculation:**
+  - One-call `audit_workbook_formulas` checks for `#REF!`, `#NAME?`, `#VALUE!`, `#DIV/0!`, `#N/A`, external links, and broken sheet references.
+  - Live Excel reads use bulk single-AppleEvent matrix extraction (10–50× faster and reliable on vertical `N×1` ranges) with live recalculation (`recalculate=True`).
+  - Live Custom Views (`excel_live_custom_views`) and capability inspection (`excel_view_capabilities`).
+
+### Word (File-Level & Live App)
+- **Document Operations:** Create, open (including legacy `.doc` conversion), close, read paragraphs/tables, set document properties, search & replace, and export to `.docx`, `.pdf`, `.rtf`, or `.txt`.
+- **Rich `.docx` Styling:**
+  - Full formatting on `add_heading`, `add_paragraph`, `insert_paragraph`, `add_list`, `format_paragraph` (fonts, colors, alignment, line spacing, `keep_with_next`, indents, shading/background, bottom borders).
+  - Full table styling on `add_table`, `format_table`, and `update_table_cell` (column widths in inches with `autofit=False`, header/body styles, alternating row shading, XML borders, cell padding in pt, `repeat_header` / `w:tblHeader`, table & per-column alignment).
+- **Live Word Automation:** List open documents (with multi-tier cascade hardened for Word 16.115.1), open, read, write/append, search & replace, save/export, and close directly in Microsoft Word.
+
 ### PowerPoint
 - Create presentations with custom titles and themes
-- Add slides with various layouts
+- Add slides with standard layouts
 - Insert text, images, and speaker notes
 - Save presentations in multiple formats
 
-### Word
-- Create documents from scratch or templates
-- Add headings, paragraphs, lists, and tables
-- Apply text formatting and styles
-- Save documents in multiple formats
-
-### Excel
-- Create workbooks with multiple worksheets
-- Write data to cells and ranges
-- Add formulas and calculations
-- Create charts (bar, line, pie)
-- Apply cell formatting and styles
-- Save workbooks in multiple formats
+---
 
 ## Prerequisites
 
 ### System Requirements
-- macOS 10.15 or later
-- Python 3.8 or later
-- Microsoft Office for Mac (PowerPoint, Word, and/or Excel)
+- **macOS** 10.15 or later (tested on macOS Apple Silicon)
+- **Python 3.10+** (recommended: Python 3.12 in a local `.venv`)
+- **Microsoft Office for Mac** (Excel, Word, and/or PowerPoint)
 
-### Python Dependencies
-```bash
-pip install mcp
-pip install python-pptx
-pip install python-docx
-pip install openpyxl
-pip install aiofiles
-```
-
-## Installation
+### Installation
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/vAirpower/macos-office365-mcp-server.git
-   cd macos-office365-mcp-server
+   git clone https://github.com/stejimenez/m365-mac-mcp.git
+   cd m365-mac-mcp
    ```
 
-2. **Install dependencies**
+2. **Create a virtual environment and install dependencies**
    ```bash
-   pip install -r requirements.txt
+   python3 -m venv .venv
+   .venv/bin/pip install -r requirements.txt
    ```
 
-3. **Set up macOS permissions**
-   
-   The server uses AppleScript to control Office applications. You need to grant permissions:
-   
-   a. Open **System Preferences** → **Security & Privacy** → **Privacy**
-   b. Select **Automation** in the left sidebar
-   c. Find your terminal application (Terminal, iTerm2, VS Code, etc.)
-   d. Check the boxes for:
-      - Microsoft PowerPoint
-      - Microsoft Word
-      - Microsoft Excel
-   
-   If prompted when first running the server, click "OK" to allow automation.
+   `requirements.txt` installs:
+   - `mcp>=1.2.0`
+   - `python-docx>=1.1.0`
+   - `openpyxl>=3.1.2`
+   - `python-pptx>=1.0.0`
+   - `aiofiles>=23.2.1`, `typing-extensions>=4.12.0`
+   - `pytest>=8.0.0`, `pytest-asyncio>=0.23.0`
+
+3. **Grant macOS Automation permissions**
+
+   Live Office tools use AppleScript to control Office apps:
+   1. Open **System Settings** → **Privacy & Security** → **Automation**
+   2. Locate your host application (Terminal, iTerm2, VS Code, Bionic, Claude Desktop, etc.)
+   3. Enable:
+      - **Microsoft Excel**
+      - **Microsoft Word**
+      - **Microsoft PowerPoint**
+   4. Click **OK** if macOS prompts on first run.
+
+---
 
 ## Configuration
 
+### Environment Variables
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `OFFICE_MCP_PROFILE` | `full` | Comma-separated, case-insensitive tool profile filter (see table below). |
+| `OFFICE_MCP_LIVE_SYNC` | `auto` | `auto` (reloads open saved Excel workbooks with view restore on `save_workbook`) or `off`. |
+| `OFFICE365_MCP_LOG_LEVEL` | `INFO` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`). All logs go to `stderr`. |
+| `OFFICE365_MCP_APPLESCRIPT_TIMEOUT` | `30.0` | Timeout in seconds for each `osascript` call. |
+| `OFFICE365_MCP_ENABLE_APPLESCRIPT` | `true` | Enable or disable AppleScript bridge (`true`/`false`). |
+| `OFFICE365_MCP_TEMP_DIR` | `/tmp/office365_mcp` | Temporary directory for intermediate/unnamed files. |
+
+### Tool Profiles (`OFFICE_MCP_PROFILE`)
+
+To keep context usage low and tool selection fast on local models (such as LM Studio / Bionic), set `OFFICE_MCP_PROFILE` to expose only the apps you need:
+
+| `OFFICE_MCP_PROFILE` | Tools | Est. Schema Tokens | Best For |
+| --- | --- | --- | --- |
+| `excel,compact` | 31 | ~3.6K | Daily Excel-only modeling & live recalculation on local models |
+| `excel` | 50 | ~5.1K | Full Excel toolset (file + live, charts, views, validation) |
+| `word` | 26 | ~2.4K | Word-only document creation, styling, and live automation |
+| `powerpoint` | 8 | ~0.6K | PowerPoint-only slide decks |
+| `word,powerpoint` | 33 | ~2.9K | Secondary MCP entry for Word + PowerPoint |
+| `compact` | 44 | ~4.8K | Core Excel + Word tools combined |
+| `excel,word` | 75 | ~7.4K | Full Excel + Word without PowerPoint |
+| `full` *(default)* | 82 | ~8.0K | All Excel, Word, and PowerPoint tools |
+
+- Values are **case-insensitive** (`EXCEL,COMPACT`, `Excel,Compact`, `excel,compact`, or `XLS,Compact` are equivalent) and accept any comma-separated combination of `excel` (`xls`/`xlsx`), `word` (`doc`/`docx`), `powerpoint` (`ppt`/`pptx`), and `compact`.
+- Unknown values log a warning to `stderr` and fall back safely to `full`.
+- Call `check_office_status` (or read `office365://status`) at any time to inspect the active profile, registered tool count, and `live_sync_mode`.
+
+### Live Excel Auto-Sync (`OFFICE_MCP_LIVE_SYNC`)
+
+Controls how `save_workbook` behaves when the target `.xlsx`/`.xlsm` file is already open in Microsoft Excel (case-insensitive: `auto` or `off`):
+
+- **`auto` *(default)*:** If the file is open in Excel with **no unsaved changes**, captures the window position/size, active sheet, zoom, scroll offset, and selection → closes Excel → writes via `openpyxl` → reopens in Excel and restores the exact view. If the file has **unsaved manual edits** in Excel, refuses to overwrite and returns a clear warning so your edits are never lost.
+- **`off`:** Never checks or touches live Excel during `save_workbook`.
+
+> **Note on `excel_live_close`:** `OFFICE_MCP_LIVE_SYNC=auto` applies to file-level `save_workbook`. If you explicitly call `excel_live_close`, Excel will close the workbook and leave it closed—simply omit `excel_live_close` if you want the workbook to stay open in Excel.
+
+---
+
 ### MCP Client Configuration
 
-Add the server to your MCP client configuration:
+#### For Bionic / LM Studio (Recommended Local-Model Setup)
+
+Register two entries pointing to the same server `.venv`:
+1. **`Microsoft 365 for Mac MCP` (Excel)** — always enabled:
+   - **Command:** `/path/to/m365-mac-mcp/.venv/bin/python`
+   - **Args:** `["/path/to/m365-mac-mcp/src/office365_mcp_server.py"]`
+   - **Env:** `OFFICE_MCP_PROFILE=excel` (or `excel,compact`), `OFFICE_MCP_LIVE_SYNC=auto`
+   - **Description:** `Microsoft 365 for Mac MCP (Excel/Office) for reading, editing, formatting, auditing, and live recalculating .xlsx/.xlsm workbooks.`
+2. **`M365 Word & PPT MCP`** — set to **Hide from agent unless mentioned** so it uses zero context until you `@`-mention it:
+   - **Env:** `OFFICE_MCP_PROFILE=word,powerpoint`
+
+**Recommended LM Studio / Bionic settings for 30B–35B local models:**
+- **Context Length:** `32768` (or higher)
+- **Max Concurrent Predictions:** `1`
+- **Preserve Thinking:** `OFF`
+- **Context Overflow:** `Stop at Limit`
+- **Project / System Prompt tip:** Add a short rule telling the assistant: *"For `.xlsx`/`.xlsm`/`.docx` files, always use the `Microsoft 365 for Mac MCP` tools directly—do not open `.xlsx` files with the built-in `Open` viewer or read `.internal/skills/.../SKILL.md`."*
 
 #### For Claude Desktop
 Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
@@ -81,9 +182,13 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "office365": {
-      "command": "python",
-      "args": ["/path/to/macos-office365-mcp-server/src/office365_mcp_server.py"]
+    "m365-mac-mcp": {
+      "command": "/path/to/m365-mac-mcp/.venv/bin/python",
+      "args": ["/path/to/m365-mac-mcp/src/office365_mcp_server.py"],
+      "env": {
+        "OFFICE_MCP_PROFILE": "full",
+        "OFFICE_MCP_LIVE_SYNC": "auto"
+      }
     }
   }
 }
@@ -95,212 +200,228 @@ Edit your Cline MCP settings:
 ```json
 {
   "mcpServers": {
-    "office365": {
-      "command": "python",
-      "args": ["/path/to/macos-office365-mcp-server/src/office365_mcp_server.py"]
+    "m365-mac-mcp": {
+      "command": "/path/to/m365-mac-mcp/.venv/bin/python",
+      "args": ["/path/to/m365-mac-mcp/src/office365_mcp_server.py"],
+      "env": {
+        "OFFICE_MCP_PROFILE": "excel,word",
+        "OFFICE_MCP_LIVE_SYNC": "auto"
+      }
     }
   }
 }
 ```
 
-## Usage
+---
 
-Once configured, the AI assistant can use the following tools:
+## Tool Reference (82 Tools)
 
-### PowerPoint Tools
-- `create_presentation` - Create a new presentation
-- `add_slide` - Add a slide to a presentation
-- `add_text_to_slide` - Add text content to a slide
-- `add_image_to_slide` - Add an image to a slide
-- `add_speaker_notes` - Add speaker notes to a slide
-- `save_presentation` - Save the presentation to a file
+### Excel File-Level Tools (30)
+| Category | Tools |
+| --- | --- |
+| **Lifecycle** | `create_workbook`, `open_workbook`, `close_workbook`, `save_workbook`, `list_active_workbooks` |
+| **Inspection & Audit** | `inspect_workbook`, `audit_workbook_formulas` *(both accept `workbook_id` or `file_path` directly)* |
+| **Worksheets** | `list_worksheets`, `add_worksheet`, `rename_worksheet`, `delete_worksheet`, `set_active_worksheet` |
+| **Read & Write** | `read_cell`, `read_range`, `write_cell`, `write_range`, `add_formula`, `batch_write_ranges` |
+| **Formatting & Styles** | `format_range`, `format_worksheet`, `batch_format_workbook`, `set_column_widths`, `list_cell_styles`, `apply_cell_style` |
+| **Tables & Charts** | `add_excel_table`, `update_excel_table_style`, `create_chart` |
+| **Data Validation** | `add_data_validation`, `list_data_validations`, `clear_data_validations` |
 
-### Word Tools
-- `create_document` - Create a new document
-- `add_heading` - Add a heading to a document
-- `add_paragraph` - Add a paragraph with optional formatting
-- `add_list` - Add a bulleted or numbered list
-- `add_table` - Add a table with data
-- `save_document` - Save the document to a file
+### Excel Live-App Tools (18)
+| Category | Tools |
+| --- | --- |
+| **Lifecycle** | `excel_live_list_workbooks`, `excel_live_create`, `excel_live_open`, `excel_live_save`, `excel_live_close` |
+| **Worksheets** | `excel_live_list_worksheets`, `excel_live_add_worksheet`, `excel_live_rename_worksheet`, `excel_live_activate_worksheet` |
+| **Read & Write** | `excel_live_read_range`, `excel_live_write_cell`, `excel_live_write_range`, `excel_live_batch_read_ranges`, `excel_live_batch_write_cells` |
+| **Views & Inspection** | `excel_live_circle_invalid`, `excel_live_custom_views`, `excel_live_update_table_style`, `excel_view_capabilities` |
 
-### Excel Tools
-- `create_workbook` - Create a new workbook
-- `add_worksheet` - Add a worksheet to a workbook
-- `write_cell` - Write data to a specific cell
-- `write_range` - Write data to a range of cells
-- `add_formula` - Add a formula to a cell
-- `create_chart` - Create a chart from data
-- `save_workbook` - Save the workbook to a file
-- `list_worksheets` - List all worksheets in a workbook
+#### Verified Excel for Mac `16.115` Scripting Capabilities
+| Feature | Support | Tool / Notes |
+| --- | --- | --- |
+| Live recalculation & bulk range reads | Supported | `excel_live_read_range`, `excel_live_batch_read_ranges`, `excel_live_write_cell`, `excel_live_batch_write_cells` |
+| Circle / Clear Invalid Data | Supported | `excel_live_circle_invalid` (`circle invalid` / `clear circles`) |
+| Custom Views (list & show) | Supported | `excel_live_custom_views` (`list` / `show`) |
+| Native Table Styles | Supported | `excel_live_update_table_style` & `update_excel_table_style` |
+| Focus Cell / Focus Cell Color / Auto-Highlight | Manual UI only | Not exposed in `Excel.sdef`; reported by `excel_view_capabilities` |
 
-### Utility Tools
-- `list_active_presentations` - List all open presentations
-- `list_active_documents` - List all open documents
-- `list_active_workbooks` - List all open workbooks
-- `check_office_status` - Check if Office apps are available
+### Word File-Level Tools (18)
+| Category | Tools |
+| --- | --- |
+| **Lifecycle & Metadata** | `create_document`, `open_document`, `close_document`, `save_document`, `list_active_documents`, `set_document_properties` |
+| **Reading** | `read_document` *(deduplicated paragraphs; opt-in `include_full_text=True`)*, `read_tables` |
+| **Content & Editing** | `add_heading`, `add_paragraph`, `insert_paragraph`, `delete_paragraph`, `replace_document_text`, `add_list` |
+| **Styling & Tables** | `format_paragraph`, `add_table`, `format_table`, `update_table_cell` |
 
-## Example Usage
+### Word Live-App Tools (8)
+`word_live_list_documents`, `word_live_create`, `word_live_open`, `word_live_read`, `word_live_write`, `word_live_replace_text`, `word_live_save`, `word_live_close`
 
-### Creating a PowerPoint Presentation
+### PowerPoint Tools (7)
+`create_presentation`, `add_slide`, `add_text_to_slide`, `add_image_to_slide`, `add_speaker_notes`, `save_presentation`, `list_active_presentations`
+
+### Utility & MCP Resources (1 Tool + 1 Resource)
+- `check_office_status` — Reports installed Office apps, active profile, registered tool count, and `live_sync_mode`.
+- `office365://status` — Read-only MCP resource returning the same server status payload.
+
+---
+
+## Example Workflows
+
+### 1. Audit & Format an Excel Financial Model (File-Level)
 ```python
-# AI Assistant can execute:
-result = await create_presentation(
-    title="Q4 Sales Report",
-    theme="modern"
-)
+# 1. Inspect and audit a workbook directly by file path
+summary = await inspect_workbook(file_path="~/Desktop/Model.xlsx")
+audit = await audit_workbook_formulas(file_path="~/Desktop/Model.xlsx")
 
-slide = await add_slide(
-    presentation_id=result["presentation_id"],
-    layout="Title and Content"
+# 2. Open, batch-format across sheets, add validation & table, and save
+wb = await open_workbook(file_path="~/Desktop/Model.xlsx")
+await batch_format_workbook(
+    workbook_id=wb["workbook_id"],
+    operations=[
+        {
+            "sheet_name": "Income Statement",
+            "freeze_panes": "B2",
+            "auto_fit_columns": True,
+            "auto_color_financial_model": True,
+            "styles": [
+                {"range": "A1:G1", "bold": True, "bg_color": "1F4E78", "font_color": "FFFFFF"},
+                {"range": "B2:F15", "number_format": "#,##0"}
+            ]
+        }
+    ]
 )
-
-await add_text_to_slide(
-    slide_id=slide["slide_id"],
-    text="Revenue increased by 25%",
-    placeholder="content"
+await add_excel_table(
+    workbook_id=wb["workbook_id"],
+    sheet_name="Income Statement",
+    table_range="A1:G16",
+    table_name="IS_Table",
+    table_style="TableStyleLight9"
 )
-
-await save_presentation(
-    presentation_id=result["presentation_id"],
-    file_path="~/Desktop/Q4_Sales.pptx"
+await add_data_validation(
+    workbook_id=wb["workbook_id"],
+    sheet_name="Income Statement",
+    cell_range="I1",
+    validation_type="list",
+    formula1=["Base", "Bull", "Bear"]
 )
+await save_workbook(workbook_id=wb["workbook_id"])
 ```
 
-### Creating a Word Document
+### 2. Live Excel Recalculation Check
 ```python
-# AI Assistant can execute:
-doc = await create_document(title="Project Proposal")
+await excel_live_open(file_path="~/Desktop/Model.xlsx", activate=True)
+baseline = await excel_live_batch_read_ranges(
+    workbook_name="Model.xlsx",
+    ranges=[
+        {"sheet_name": "Income Statement", "cell_range": "F2:F15"},
+        {"sheet_name": "Balance Sheet", "cell_range": "F12:F27"},
+    ]
+)
+await excel_live_write_cell(
+    workbook_name="Model.xlsx",
+    sheet_name="Income Statement",
+    cell="F2",
+    value=450000,
+    recalculate=True
+)
+updated = await excel_live_read_range(
+    workbook_name="Model.xlsx",
+    sheet_name="Income Statement",
+    cell_range="F15"
+)
+await excel_live_save(workbook_name="Model.xlsx")
+```
 
+### 3. Create a Styled Word Report
+```python
+doc = await create_document(title="Executive Summary")
 await add_heading(
     document_id=doc["document_id"],
-    text="Executive Summary",
-    level=1
+    text="Q4 Financial Overview",
+    level=1,
+    formatting={"font_name": "Calibri", "font_color": "1F4E78"}
 )
-
-await add_paragraph(
+await add_table(
     document_id=doc["document_id"],
-    text="This proposal outlines our approach...",
-    formatting={"font_size": 12, "font_name": "Arial"}
+    rows=3,
+    columns=3,
+    data=[["Metric", "FY24", "FY25"], ["Revenue", "$391B", "$416B"], ["Net Income", "$94B", "$112B"]],
+    column_widths=[2.5, 1.5, 1.5],
+    header_formatting={"bold": True, "bg_color": "1F4E78", "font_color": "FFFFFF"},
+    alternating_row_color="F2F6FA",
+    repeat_header=True
 )
-
-await save_document(
-    document_id=doc["document_id"],
-    file_path="~/Desktop/proposal.docx"
-)
+await save_document(document_id=doc["document_id"], file_path="~/Desktop/Report.docx")
 ```
 
-### Creating an Excel Workbook
-```python
-# AI Assistant can execute:
-workbook = await create_workbook(title="Sales Analysis")
+---
 
-# Add data
-data = [
-    ["Product", "Q1", "Q2", "Q3", "Q4"],
-    ["Laptops", 100, 150, 200, 180],
-    ["Tablets", 80, 90, 110, 120],
-    ["Phones", 200, 250, 300, 350]
-]
+## Testing
 
-await write_range(
-    workbook_id=workbook["workbook_id"],
-    sheet_name="Sheet1",
-    start_cell="A1",
-    data=data,
-    formatting={"bold": True}  # Bold headers
-)
+Run the unit and integration test suite with the project virtual environment:
 
-# Add a formula
-await add_formula(
-    workbook_id=workbook["workbook_id"],
-    sheet_name="Sheet1",
-    cell="F2",
-    formula="=SUM(B2:E2)"
-)
-
-# Create a chart
-await create_chart(
-    workbook_id=workbook["workbook_id"],
-    sheet_name="Sheet1",
-    chart_type="bar",
-    data_range="A1:E4",
-    chart_title="Quarterly Sales",
-    position="G2"
-)
-
-await save_workbook(
-    workbook_id=workbook["workbook_id"],
-    file_path="~/Desktop/sales_analysis.xlsx"
-)
+```bash
+.venv/bin/pytest tests/test_basic.py tests/test_word_excel_rw.py -v
 ```
+
+This runs **25 tests** covering:
+- Excel file-level read/write, batch formatting, named styles, tables, data validation, formula sheet-reference auto-quoting & auditing, and `OFFICE_MCP_LIVE_SYNC` view-restore / unsaved-edits protection.
+- Word file-level creation, rich paragraph/table styling, search & replace, and `.docx` XML attributes (`w:tblHeader`, borders, shading, widths).
+- Composable `OFFICE_MCP_PROFILE` filtering, compact JSON responses, stripped schema noise, sparse A1 formula maps, and trimmed blank cells.
+- Hardened AppleScript generation and parsing for Excel `16.115` and Word `16.115.1`.
+
+---
 
 ## Troubleshooting
 
-### Permission Issues
-If you see "Not authorized to send Apple events", ensure:
-1. Your terminal has automation permissions for Office apps
-2. Office applications are installed and have been opened at least once
-3. You may need to restart your terminal after granting permissions
+### Permission Issues (`-1743` / "Not authorized to send Apple events")
+1. Open **System Settings** → **Privacy & Security** → **Automation** and enable Excel, Word, and PowerPoint for your MCP host app.
+2. Open each Office app manually at least once to finish initial licensing/first-run dialogs.
+3. Restart your terminal or MCP client after granting permissions.
 
-### Import Errors
-If you see import errors:
-1. Ensure all dependencies are installed: `pip install -r requirements.txt`
-2. Check Python version: `python --version` (should be 3.8+)
-3. Verify MCP is installed: `pip show mcp`
+### Live Excel Calls Time Out or Hang
+- Check if Excel has an open modal dialog (e.g., **Save As**, **Grant Access**, or an alert) or if a cell is actively in **Edit Mode** (cursor blinking inside the formula bar). Press `Esc` in Excel and retry.
+- `create_workbook(..., open_in_excel=True)` and `create_document(..., open_in_word=True)` automatically skip opening unnamed `/tmp` UUID files to avoid macOS sandbox **Grant Access** prompts; save the file to a normal folder (like `~/Desktop` or your workspace) before opening in the live app.
 
-### Office Not Found
-If Office applications aren't detected:
-1. Ensure Microsoft Office for Mac is installed
-2. Try opening PowerPoint/Word/Excel manually first
-3. Check if Office is installed in the standard Applications folder
+### Formula Cells Show `null` After `save_workbook`
+- File-level `openpyxl` writes formulas to disk without running Excel's calculation engine, so cached evaluated values are empty until Excel recalculates them. Use `excel_live_open` + `excel_live_read_range` (or `OFFICE_MCP_LIVE_SYNC=auto` with the file open in Excel) to evaluate and read live calculated values.
 
-## Development
+### Import / Environment Errors
+- Ensure your MCP client config points directly to `.venv/bin/python` rather than system `python3`.
+- Verify dependencies with `.venv/bin/pip install -r requirements.txt`.
 
-### Project Structure
-```
-macos-office365-mcp-server/
+---
+
+## Project Structure
+
+```text
+m365-mac-mcp/
 ├── src/
-│   ├── office365_mcp_server.py    # Main MCP server
+│   ├── office365_mcp_server.py       # Main MCP server, tool registration & profiles
 │   ├── controllers/
-│   │   ├── powerpoint_controller.py
-│   │   ├── word_controller.py
-│   │   └── excel_controller.py
+│   │   ├── excel_controller.py       # File-level Excel (openpyxl) + live auto-sync
+│   │   ├── word_controller.py        # File-level Word (python-docx) + rich styling
+│   │   └── powerpoint_controller.py  # File-level PowerPoint (python-pptx)
 │   ├── integrations/
-│   │   └── applescript_bridge.py  # AppleScript automation
+│   │   └── applescript_bridge.py     # Serialized, hardened macOS AppleScript bridge
 │   └── utils/
-│       ├── config.py
-│       ├── logger.py
-│       └── validators.py
+│       ├── config.py                 # Env & JSON configuration
+│       ├── logger.py                 # stderr-only structured logging
+│       └── validators.py             # Input & path validation
+├── tests/
+│   ├── test_basic.py
+│   └── test_word_excel_rw.py
 ├── requirements.txt
 └── README.md
 ```
 
-### Adding New Features
-1. Add new methods to the appropriate controller
-2. Register new tools in `office365_mcp_server.py`
-3. Update this README with usage examples
+## Author & License
 
-## License
-
-MIT License - see LICENSE file for details
-
-## Contributing
-
-Contributions are welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new functionality
-4. Submit a pull request
-
-## Support
-
-For issues and questions:
-- Open an issue on GitHub
-- Check existing issues for solutions
-- Ensure you've followed all setup steps
+- **Author:** Sterling Jimenez, Ph.D. (stejimenez@gmail.com)
+- **License:** MIT License — see [LICENSE](LICENSE) for details.
 
 ## Acknowledgments
 
 - Built with the Model Context Protocol (MCP)
-- Uses python-pptx, python-docx, and openpyxl for document manipulation
-- AppleScript integration for native Office control
+- Uses `openpyxl`, `python-docx`, and `python-pptx` for file-level Office manipulation
+- Uses macOS AppleScript (`osascript`) for native Microsoft Excel and Word automation
+- Based on the original `macos-office365-mcp-server` proof-of-concept by Adam Bluhm (https://www.linkedin.com/in/bluhmadam/)
