@@ -435,6 +435,8 @@ m365-mac-mcp/
 │   └── test_word_excel_rw.py
 ├── Sample Model Config/
 │   ├── SYSTEM_PROMPT.md                        # Recommended Bionic/LM Studio system prompt
+│   ├── bionic_mcp_config_part1.jpg             # Bionic MCP server setup (Connection, Command, Args)
+│   ├── bionic_mcp_config_part2.jpg             # Bionic MCP server setup (Env vars, Working dir)
 │   ├── qwen3.6_35b_a3b_q8_0_config_part1.png   # LM Studio model config (Prompt, Context, Reasoning)
 │   └── qwen3.6_35b_a3b_q8_0_config_part2.png   # LM Studio model config (Memory, Sampling, Advanced)
 ├── requirements.txt
