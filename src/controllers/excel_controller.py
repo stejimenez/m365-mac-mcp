@@ -1709,17 +1709,55 @@ class ExcelController:
 
         entry = self._get_entry(workbook_id)
         sheet_summaries: List[Dict[str, Any]] = []
+        op_warnings: List[str] = []
         total_cells = 0
+
+        known_op_keys = {
+            "sheet_name", "column_widths", "row_heights", "freeze_panes",
+            "auto_fit_columns", "min_col_width", "max_col_width", "col_padding",
+            "auto_color_financial_model", "merge_ranges", "show_gridlines",
+            "styles", "rules", "cell_styles", "formats", "range_styles",
+            "style_rules", "cell_formats", "formatting_rules", "number_formats",
+        }
+        style_list_keys = (
+            "styles", "rules", "cell_styles", "formats",
+            "range_styles", "style_rules", "cell_formats", "formatting_rules",
+        )
 
         for op in operations:
             ws = self._get_sheet(entry, op.get("sheet_name"))
             styled_ranges = 0
             cells_formatted = 0
 
+            is_flat_range_op = any(
+                k in op for k in ("range", "cells", "cell_range", "range_ref")
+            )
+            if not is_flat_range_op:
+                unknown_keys = sorted(set(op.keys()) - known_op_keys)
+                if unknown_keys:
+                    op_warnings.append(
+                        f"Sheet '{ws.title}' ignored unrecognized keys {unknown_keys}; "
+                        f"use 'styles': [{{'range': 'A1:G1', 'formatting': {{...}}}}]."
+                    )
+
             if op.get("auto_color_financial_model"):
                 cells_formatted += self._auto_color_financial_sheet(ws)
 
-            for rule in op.get("styles") or []:
+            combined_rules: List[Dict[str, Any]] = []
+            if is_flat_range_op:
+                # Fallback: accept flat per-range op like {'sheet_name': 'IS', 'range': 'A1:G1', 'bold': True}
+                flat_rule = {k: v for k, v in op.items() if k not in known_op_keys}
+                combined_rules.append(flat_rule)
+            for skey in style_list_keys:
+                val = op.get(skey)
+                if isinstance(val, list):
+                    combined_rules.extend(val)
+            num_fmts_map = op.get("number_formats")
+            if isinstance(num_fmts_map, dict):
+                for nf_range, nf_code in num_fmts_map.items():
+                    combined_rules.append({"range": str(nf_range), "number_format": str(nf_code)})
+
+            for rule in combined_rules:
                 ref, style_name, num_fmt, fmt = self._extract_style_rule(rule, sheet_title=ws.title)
                 for min_col, min_row, max_col, max_row, _ in self._resolve_multi_format_bounds(ws, ref):
                     for r in range(min_row, max_row + 1):
@@ -1784,13 +1822,16 @@ class ExcelController:
             })
 
         await self._save_working_copy(entry)
-        return sanitize_for_json({
+        out: Dict[str, Any] = {
             "status": "success",
             "workbook_id": workbook_id,
             "sheets_formatted": len(sheet_summaries),
             "total_cells_formatted": total_cells,
             "sheets": sheet_summaries,
-        })
+        }
+        if op_warnings:
+            out["warnings"] = op_warnings
+        return sanitize_for_json(out)
 
     # ------------------------------------------------------------------
     # Named Cell Styles & Financial Model Presets
@@ -2388,15 +2429,32 @@ class ExcelController:
         if not ref:
             loc = f" on sheet '{sheet_title}'" if sheet_title else ""
             raise ValueError(f"Each style entry{loc} must include a 'range' (e.g. 'A1:G1')")
-        style_name = rule.get("cell_style") or rule.get("style_name")
-        num_fmt = rule.get("number_format")
-        reserved = {"range", "cells", "cell_range", "range_ref", "formatting", "number_format", "cell_style", "style_name"}
+        raw_style_val = rule.get("style")
+        style_name = (
+            rule.get("cell_style")
+            or rule.get("style_name")
+            or (raw_style_val if isinstance(raw_style_val, str) else None)
+        )
+        num_fmt = (
+            rule.get("number_format")
+            or rule.get("num_format")
+            or rule.get("num_fmt")
+            or rule.get("format_code")
+        )
+        reserved = {
+            "range", "cells", "cell_range", "range_ref",
+            "formatting", "style", "format",
+            "number_format", "num_format", "num_fmt", "format_code",
+            "cell_style", "style_name",
+        }
         merged_fmt: Dict[str, Any] = {}
         for k, v in rule.items():
             if k not in reserved:
                 merged_fmt[k] = v
-        if isinstance(rule.get("formatting"), dict):
-            merged_fmt.update(rule["formatting"])
+        for nested_key in ("style", "format", "formatting"):
+            nested_val = rule.get(nested_key)
+            if isinstance(nested_val, dict):
+                merged_fmt.update(nested_val)
         return str(ref), style_name, num_fmt, (merged_fmt or None)
 
     @classmethod
@@ -2413,12 +2471,14 @@ class ExcelController:
             if wb is not None:
                 self._apply_named_style_to_cell(wb, cell, str(raw_style))
 
-        # 1. Font (merge with existing cell.font)
+        # 1. Font (merge with existing cell.font; supports both flat keys and nested 'font': {...})
+        nested_font = formatting.get("font") if isinstance(formatting.get("font"), dict) else {}
+        font_src: Dict[str, Any] = {**nested_font, **formatting}
         font_keys = {
             "bold", "italic", "underline", "strike", "strikethrough",
-            "font_size", "font_color", "color", "font_name", "font_family",
+            "font_size", "size", "font_color", "color", "font_name", "font_family", "name",
         }
-        if any(k in formatting for k in font_keys):
+        if nested_font or any(k in formatting for k in (font_keys - {"size", "name"})):
             base_font = copy(cell.font) if cell.font else Font()
             font_kwargs: Dict[str, Any] = {
                 "name": base_font.name,
@@ -2429,34 +2489,47 @@ class ExcelController:
                 "strike": base_font.strike,
                 "color": base_font.color,
             }
-            if "bold" in formatting:
-                font_kwargs["bold"] = bool(formatting["bold"])
-            if "italic" in formatting:
-                font_kwargs["italic"] = bool(formatting["italic"])
-            if "underline" in formatting:
-                u = formatting["underline"]
+            if "bold" in font_src:
+                font_kwargs["bold"] = bool(font_src["bold"])
+            if "italic" in font_src:
+                font_kwargs["italic"] = bool(font_src["italic"])
+            if "underline" in font_src:
+                u = font_src["underline"]
                 font_kwargs["underline"] = "single" if u is True else (None if not u else str(u))
-            if "strike" in formatting or "strikethrough" in formatting:
-                font_kwargs["strike"] = bool(formatting.get("strike", formatting.get("strikethrough")))
-            if "font_size" in formatting:
-                font_kwargs["size"] = float(formatting["font_size"])
-            if "font_name" in formatting or "font_family" in formatting:
-                font_kwargs["name"] = str(formatting.get("font_name") or formatting.get("font_family"))
-            raw_fc = formatting.get("font_color", formatting.get("color"))
+            if "strike" in font_src or "strikethrough" in font_src:
+                font_kwargs["strike"] = bool(font_src.get("strike", font_src.get("strikethrough")))
+            raw_sz = formatting.get("font_size", nested_font.get("size", nested_font.get("font_size")))
+            if raw_sz is not None:
+                font_kwargs["size"] = float(raw_sz)
+            raw_fn = formatting.get("font_name") or formatting.get("font_family") or nested_font.get("name") or nested_font.get("font_name")
+            if raw_fn:
+                font_kwargs["name"] = str(raw_fn)
+            raw_fc = formatting.get("font_color", formatting.get("color", nested_font.get("color", nested_font.get("font_color"))))
             if raw_fc is not None:
                 norm_fc = self._normalize_hex_color(raw_fc)
                 if norm_fc:
                     font_kwargs["color"] = norm_fc
             cell.font = Font(**font_kwargs)
 
-        # 2. Fill (bg_color / fill_color / fill)
-        raw_fill = formatting.get("bg_color", formatting.get("fill_color", formatting.get("fill")))
+        # 2. Fill (bg_color / background_color / fill_color / fill)
+        raw_fill = formatting.get(
+            "bg_color",
+            formatting.get(
+                "background_color",
+                formatting.get("fill_color", formatting.get("fill")),
+            ),
+        )
         if raw_fill is not None:
             fill_type = "solid"
             color_val = raw_fill
             if isinstance(raw_fill, dict):
-                fill_type = str(raw_fill.get("fill_type", "solid"))
-                color_val = raw_fill.get("color") or raw_fill.get("start_color")
+                fill_type = str(raw_fill.get("fill_type", raw_fill.get("patternType", "solid")))
+                color_val = (
+                    raw_fill.get("color")
+                    or raw_fill.get("start_color")
+                    or raw_fill.get("fgColor")
+                    or raw_fill.get("bgColor")
+                )
             if color_val is None or str(color_val).lower() == "none":
                 cell.fill = PatternFill(fill_type=None)
             else:
@@ -2464,9 +2537,11 @@ class ExcelController:
                 if norm_bg:
                     cell.fill = PatternFill(start_color=norm_bg, end_color=norm_bg, fill_type=fill_type)
 
-        # 3. Alignment (merge with existing cell.alignment)
+        # 3. Alignment (merge with existing cell.alignment; supports flat keys or nested 'alignment': {...})
+        nested_align = formatting.get("alignment") if isinstance(formatting.get("alignment"), dict) else {}
+        align_src: Dict[str, Any] = {**nested_align, **formatting}
         align_keys = {"horizontal", "vertical", "wrap_text", "indent", "text_rotation"}
-        if any(k in formatting for k in align_keys):
+        if nested_align or any(k in formatting for k in align_keys):
             base_align = copy(cell.alignment) if cell.alignment else Alignment()
             align_kwargs: Dict[str, Any] = {
                 "horizontal": base_align.horizontal,
@@ -2475,16 +2550,16 @@ class ExcelController:
                 "indent": base_align.indent,
                 "text_rotation": base_align.text_rotation,
             }
-            if "horizontal" in formatting:
-                align_kwargs["horizontal"] = str(formatting["horizontal"])
-            if "vertical" in formatting:
-                align_kwargs["vertical"] = str(formatting["vertical"])
-            if "wrap_text" in formatting:
-                align_kwargs["wrap_text"] = bool(formatting["wrap_text"])
-            if "indent" in formatting:
-                align_kwargs["indent"] = int(formatting["indent"])
-            if "text_rotation" in formatting:
-                align_kwargs["text_rotation"] = int(formatting["text_rotation"])
+            if "horizontal" in align_src:
+                align_kwargs["horizontal"] = str(align_src["horizontal"])
+            if "vertical" in align_src:
+                align_kwargs["vertical"] = str(align_src["vertical"])
+            if "wrap_text" in align_src:
+                align_kwargs["wrap_text"] = bool(align_src["wrap_text"])
+            if "indent" in align_src:
+                align_kwargs["indent"] = int(align_src["indent"])
+            if "text_rotation" in align_src:
+                align_kwargs["text_rotation"] = int(align_src["text_rotation"])
             cell.alignment = Alignment(**align_kwargs)
 
         # 4. Border (supports bool, style string, dict with top/bottom/left/right/all/color, or border_* keys)
@@ -2529,8 +2604,9 @@ class ExcelController:
             cell.border = Border(left=left_s, right=right_s, top=top_s, bottom=bottom_s)
 
         # 5. Number format
-        if "number_format" in formatting and formatting["number_format"]:
-            cell.number_format = str(formatting["number_format"])
+        raw_nf = formatting.get("number_format") or formatting.get("num_format") or formatting.get("num_fmt") or formatting.get("format_code")
+        if raw_nf:
+            cell.number_format = str(raw_nf)
 
     async def get_workbook_info(self, workbook_id: str) -> Dict[str, Any]:
         entry = self._get_entry(workbook_id)

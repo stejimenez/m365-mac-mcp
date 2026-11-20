@@ -1420,3 +1420,73 @@ async def test_token_optimizations_compact_json_schema_and_sparse_formulas(monke
     assert "method" not in live
     assert live["values"] == [["Revenue", "100", "120", "0.2"], ["Margin", "50", "60", "0.5"]]
     assert live["formulas"] == {"D2": "=(C2/B2)-1", "D3": "=C3/C2"}
+
+
+@pytest.mark.asyncio
+async def test_batch_format_workbook_accepts_llm_style_aliases_and_warns_unknown(tmp_path: Path):
+    """Verify batch_format_workbook handles rules/formats/number_formats, nested font/fill/style, and warns on unknown keys."""
+    from openpyxl import load_workbook
+
+    created = await server.create_workbook(title="Alias Format Test", sheet_name="IS")
+    wb_id = created["workbook_id"]
+    await server.write_range(
+        wb_id,
+        sheet_name="IS",
+        start_cell="A1",
+        data=[
+            ["Line Item", "FY2025"],
+            ["Revenue", 416161],
+            ["Gross Margin %", 0.469],
+        ],
+    )
+    res = await server.batch_format_workbook(
+        wb_id,
+        operations=[
+            {
+                "sheet_name": "IS",
+                "column_widths": {"A": 44, "B": 15},
+                "freeze_panes": "B2",
+                "rules": [
+                    {
+                        "range": "A1:B1",
+                        "style": {
+                            "font": {"bold": True, "color": "#FFFFFF"},
+                            "fill": {"fgColor": "#1F4E79"},
+                            "alignment": {"horizontal": "center"},
+                        },
+                    }
+                ],
+                "number_formats": {
+                    "B2": '$#,##0;($#,##0);"-"',
+                    "B3": "0.0%",
+                },
+                "bogus_key": True,
+            },
+            # Flat per-range operation item fallback
+            {
+                "sheet_name": "IS",
+                "range": "A2:A3",
+                "italic": True,
+                "bg_color": "#D9E1F2",
+            },
+        ],
+    )
+    assert res["status"] == "success"
+    assert res["total_cells_formatted"] == 6
+    assert "warnings" in res and "bogus_key" in res["warnings"][0]
+
+    out_path = tmp_path / "AliasFormat.xlsx"
+    await server.save_workbook(wb_id, str(out_path), format="xlsx")
+    await server.close_workbook(wb_id)
+
+    wb = load_workbook(str(out_path))
+    ws = wb["IS"]
+    assert ws["A1"].font.bold is True
+    assert ws["A1"].font.color.rgb.endswith("FFFFFF")
+    assert ws["A1"].fill.start_color.rgb.endswith("1F4E79")
+    assert ws["A1"].alignment.horizontal == "center"
+    assert ws["A2"].font.italic is True
+    assert ws["A2"].fill.start_color.rgb.endswith("D9E1F2")
+    assert ws["B2"].number_format == '$#,##0;($#,##0);"-"'
+    assert ws["B3"].number_format == "0.0%"
+    wb.close()
