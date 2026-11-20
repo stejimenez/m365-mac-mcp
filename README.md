@@ -88,9 +88,9 @@ This server was developed, benchmarked, and end-to-end verified on the following
 | **Operating System** | **macOS 27.2.1** (Build `26B131`, Apple Silicon) |
 | **Microsoft 365 for Mac** | Excel `16.115`, Word `16.115.1`, PowerPoint `16.115.1` |
 | **MCP Client & Runtime** | **Bionic `1.2.1+10`** + **LM Studio** (local inference) |
-| **Local Inference Model** | **`Qwen3.6 35B A3B`** (32K+ context, `Max Concurrent Predictions = 1`, `Preserve Thinking = OFF`) |
+| **Local Inference Model** | **`Qwen3.6 35B A3B — Q8_0`** (Context `65536`, GPU Offload `40`, CPU Threads `6`, Eval Batch `2048`, Phys Batch `512`, Flash Attention `ON`, Temp `0.3`, Reasoning Budget `2048`, Preserve Thinking `OFF`, Unified + GPU KV Cache `ON`, Top-K `20`, Top-P `0.95`, Min-P `0.05`, Repeat Penalty `1.1`, Experts `8`) — see [`Sample Model Config/`](Sample%20Model%20Config/) |
 | **Python Environment** | Python `3.12.16` (`.venv`), `mcp` `2.3.0`, `openpyxl` `3.1.5`, `python-docx` `1.2.0` |
-| **Recommended MCP Env** | `OFFICE_MCP_PROFILE=EXCEL` (or `EXCEL,COMPACT`), `OFFICE_MCP_LIVE_SYNC=AUTO`, `OFFICE365_MCP_APPLESCRIPT_TIMEOUT=30` |
+| **Recommended MCP Env** | `OFFICE_MCP_PROFILE=EXCEL` (or `EXCEL,COMPACT`), `OFFICE_MCP_LIVE_SYNC=AUTO`, `OFFICE_MCP_FORMULA_GUARD=LITERALS_ONLY`, `OFFICE365_MCP_APPLESCRIPT_TIMEOUT=30` |
 
 ### Installation
 
@@ -192,12 +192,12 @@ Register two entries pointing to the same server `.venv`:
 2. **`M365 Word & PPT MCP`** — set to **Hide from agent unless mentioned** so it uses zero context until you `@`-mention it:
    - **Env:** `OFFICE_MCP_PROFILE=word,powerpoint`
 
-**Recommended LM Studio / Bionic settings for 30B–35B local models:**
-- **Context Length:** `32768` (or higher)
-- **Max Concurrent Predictions:** `1`
-- **Preserve Thinking:** `OFF`
-- **Context Overflow:** `Stop at Limit`
-- **Project / System Prompt tip:** Add a short rule telling the assistant: *"For `.xlsx`/`.xlsm`/`.docx` files, always use the `Microsoft 365 for Mac MCP` tools directly—do not open `.xlsx` files with the built-in `Open` viewer or read `.internal/skills/.../SKILL.md`."*
+**Recommended LM Studio / Bionic settings for `Qwen3.6 35B A3B — Q8_0` (full screenshots & system prompt in [`Sample Model Config/`](Sample%20Model%20Config/)):**
+- **Context & Performance:** `Context Length = 65536`, `GPU Offload = 40`, `CPU Thread Pool Size = 6`, `Evaluation Batch Size = 2048`, `Physical Batch Size = 512`, `Max Concurrent Predictions = 1`, `Flash Attention = ON`
+- **Generation & Reasoning:** `Temperature = 0.3`, `Context Overflow = Stop at Limit`, `Reasoning Budget = 2048` (`"I have to answer now."`), `Preserve Thinking = OFF`
+- **Memory:** `Offload KV Cache to GPU = ON`, `Unified KV Cache = ON`, `Context Checkpoints = 32`, `Keep Model in Memory = ON`, `Try mmap() = ON`, `Speculative Decoding = Off`
+- **Sampling:** `Top K = 20`, `Top P = 0.95`, `Min P = 0.05`, `Repeat Penalty = 1.1`, `Number of Experts = 8`
+- **System Prompt:** Copy [`Sample Model Config/SYSTEM_PROMPT.md`](Sample%20Model%20Config/SYSTEM_PROMPT.md) (`UNIVERSAL STERLING ENGINE V3.2`) into Bionic/LM Studio's System Prompt so the agent stays concise, avoids tool loops, and always uses Office Mac MCP tools directly instead of Bionic's built-in viewer or `.internal/skills/.../SKILL.md`.
 
 #### For Claude Desktop
 Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
@@ -433,6 +433,10 @@ m365-mac-mcp/
 ├── tests/
 │   ├── test_basic.py
 │   └── test_word_excel_rw.py
+├── Sample Model Config/
+│   ├── SYSTEM_PROMPT.md                        # Recommended Bionic/LM Studio system prompt
+│   ├── qwen3.6_35b_a3b_q8_0_config_part1.png   # LM Studio model config (Prompt, Context, Reasoning)
+│   └── qwen3.6_35b_a3b_q8_0_config_part2.png   # LM Studio model config (Memory, Sampling, Advanced)
 ├── requirements.txt
 └── README.md
 ```
