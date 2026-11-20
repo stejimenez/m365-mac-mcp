@@ -6,14 +6,14 @@
 ![Microsoft Office](https://img.shields.io/badge/Microsoft%20Office%20for%20Mac-16.x-D83B01?logo=microsoftoffice)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![MCP](https://img.shields.io/badge/MCP-SDK%20v1%20%7C%20v2-4B32C3)
-![License](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-orange)
+![License](https://img.shields.io/badge/License-Non--Commercial%20%2F%20Source--Available-orange)
 
 A Model Context Protocol (MCP) server (`m365-mac-mcp`) that enables AI assistants to create, inspect, format, audit, and automate Microsoft Office documents (**Excel**, **Word**, and **PowerPoint**) on macOS.
 
 This server combines **fast file-level manipulation** (`openpyxl`, `python-docx`, `python-pptx`) with **hardened live macOS Office automation** via AppleScript (`osascript`) for real-time Excel formula recalculation, live Word editing, and seamless view-preserving sync with open workbooks.
 
 > **Author:** Sterling Jimenez, Ph.D. (stejimenez@gmail.com)  
-> **Licensing:** Source-available — **free for personal & academic use** under [PolyForm Noncommercial 1.0.0](LICENSE). **Commercial license required** for business/commercial use (`stejimenez@gmail.com`). Not an official Microsoft MCP Server.
+> **Licensing:** [Custom Non-Commercial / Source-Available License](LICENSE) — **free for personal & academic use**; **commercial license required** for business/commercial use (`stejimenez@gmail.com`). Not an official Microsoft MCP Server.
 
 ---
 
@@ -448,7 +448,7 @@ m365-mac-mcp/
 ## Author & License
 
 - **Author:** Sterling Jimenez, Ph.D. (stejimenez@gmail.com)
-- **Noncommercial / Personal & Academic Use:** Free under the **PolyForm Noncommercial License 1.0.0** — see [LICENSE](LICENSE).
+- **Non-Commercial / Personal & Academic Use:** Free under the **Custom Non-Commercial / Source-Available License** — see [LICENSE](LICENSE).
 - **Commercial Use:** Requires a separate commercial license — contact **Sterling Jimenez, Ph.D.** at `stejimenez@gmail.com`.
 - **Upstream Attribution:** Preserved MIT attribution for the original `macos-office365-mcp-server` foundation is in [NOTICE](NOTICE).
 
