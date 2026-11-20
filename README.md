@@ -74,9 +74,23 @@ This server combines **fast file-level manipulation** (`openpyxl`, `python-docx`
 ## Prerequisites
 
 ### System Requirements
-- **macOS** 10.15 or later (tested on macOS Apple Silicon)
+- **macOS** 10.15 or later (recommended: Apple Silicon macOS 27.x)
 - **Python 3.10+** (recommended: Python 3.12 in a local `.venv`)
-- **Microsoft Office for Mac** (Excel, Word, and/or PowerPoint)
+- **Microsoft 365 / Office for Mac** (Excel, Word, and/or PowerPoint)
+
+### Recommended & Tested Reference Setup
+
+This server was developed, benchmarked, and end-to-end verified on the following 100% local Apple Silicon setup:
+
+| Component | Verified Configuration |
+| --- | --- |
+| **Hardware** | **Mac mini (Apple M4 Pro, `Mac16,11`)** — 14-core CPU (10P + 4E), **64 GB** Unified Memory |
+| **Operating System** | **macOS 27.2.1** (Build `26B131`, Apple Silicon) |
+| **Microsoft 365 for Mac** | Excel `16.115`, Word `16.115.1`, PowerPoint `16.115.1` |
+| **MCP Client & Runtime** | **Bionic `1.2.1+10`** + **LM Studio** (local inference) |
+| **Local Inference Model** | **`Qwen3.6 35B A3B`** (32K+ context, `Max Concurrent Predictions = 1`, `Preserve Thinking = OFF`) |
+| **Python Environment** | Python `3.12.16` (`.venv`), `mcp` `2.3.0`, `openpyxl` `3.1.5`, `python-docx` `1.2.0` |
+| **Recommended MCP Env** | `OFFICE_MCP_PROFILE=EXCEL` (or `EXCEL,COMPACT`), `OFFICE_MCP_LIVE_SYNC=AUTO`, `OFFICE365_MCP_APPLESCRIPT_TIMEOUT=30` |
 
 ### Installation
 
