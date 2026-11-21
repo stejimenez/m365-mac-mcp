@@ -2,7 +2,7 @@
 
 *Dual-mode (file-level + live AppleScript) MCP server for Microsoft Excel, Word, and PowerPoint — verified on **macOS 27.x** & **Microsoft Office 16.x** (`m365-mac-mcp`).*
 
-![Release](https://img.shields.io/badge/Release-v2.1.1-blue)
+![Release](https://img.shields.io/badge/Release-v2.1.2-blue)
 ![macOS](https://img.shields.io/badge/macOS-27.x%20(Apple%20Silicon)-000000?logo=apple)
 ![Microsoft Office](https://img.shields.io/badge/Microsoft%20Office%20for%20Mac-16.x-D83B01?logo=microsoftoffice)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
@@ -455,6 +455,7 @@ m365-mac-mcp/
 │   ├── test_basic.py
 │   └── test_word_excel_rw.py
 ├── docs/
+│   ├── EXECUTIVE_COMPARISON_MATRIX.md          # Standalone 16GB/32GB/64GB M4 comparison matrix
 │   └── HARDWARE_AND_PROFILE_GUIDE.md           # 16GB/32GB/64GB M4 model & OFFICE_MCP_PROFILE guide
 ├── Sample Model Config/
 │   ├── SYSTEM_PROMPT.md                        # Recommended Bionic/LM Studio system prompt

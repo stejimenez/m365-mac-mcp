@@ -1725,7 +1725,7 @@ async def check_office_status() -> Dict[str, Any]:
         versions = await applescript.get_office_version_info()
         return sanitize_for_json({
             "status": "running",
-            "server_version": "2.1.1",
+            "server_version": "2.1.2",
             "word_available": versions["word"]["installed"],
             "excel_available": versions["excel"]["installed"],
             "powerpoint_available": versions["powerpoint"]["installed"],

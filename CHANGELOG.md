@@ -9,6 +9,13 @@ This project follows [Semantic Versioning (`MAJOR.MINOR.PATCH`)](https://semver.
 
 ---
 
+## [v2.1.2] - 2026-11-21
+
+### Added
+- **Standalone Executive Comparison Matrix (`docs/EXECUTIVE_COMPARISON_MATRIX.md`):** Added a dedicated, quick-reference Markdown matrix comparing 16 GB, 32 GB, and 64 GB Apple Silicon M4/M4 Pro/M4 Max configurations for `m365-mac-mcp`.
+
+---
+
 ## [v2.1.1] - 2026-11-21
 
 ### Added
