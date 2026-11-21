@@ -439,6 +439,15 @@ m365-mac-mcp/
 │   ├── bionic_mcp_config_part2.jpg             # Bionic MCP server setup (Env vars, Working dir)
 │   ├── qwen3.6_35b_a3b_q8_0_config_part1.png   # LM Studio model config (Prompt, Context, Reasoning)
 │   └── qwen3.6_35b_a3b_q8_0_config_part2.png   # LM Studio model config (Memory, Sampling, Advanced)
+├── skills/                                     # Ready-to-use Finance Skills (SKILL.md) — see skills/README.md
+│   ├── README.md
+│   ├── wall-street-formatter/SKILL.md
+│   ├── model-auditor/SKILL.md
+│   ├── live-what-if-runner/SKILL.md
+│   ├── three-statement-projector/SKILL.md
+│   ├── capex-project-analyzer/SKILL.md
+│   ├── dcf-investment-template-builder/SKILL.md
+│   └── boardroom-brief-generator/SKILL.md
 ├── requirements.txt
 ├── LICENSE
 ├── NOTICE
