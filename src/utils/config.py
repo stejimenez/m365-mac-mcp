@@ -63,8 +63,9 @@ class Config:
         }
 
         for key, value in env_overrides.items():
-            if value is None:
+            if value is None or not value.strip():
                 continue
+            value = value.strip()
             if key in ("max_presentations", "max_documents", "max_workbooks"):
                 config_data[key] = int(value)
             elif key == "applescript_timeout":
