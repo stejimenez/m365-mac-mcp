@@ -5,7 +5,7 @@
 
 **Author:** Sterling Jimenez, Ph.D. (stejimenez@gmail.com)
 
-This folder contains ready-to-use, pure-Markdown (**3.0–3.9 KB** each) **Finance Skills (`SKILL.md`)** designed so **non-technical finance professionals** can run institutional Excel, Word, and PowerPoint workflows in plain English—powered by **`m365-mac-mcp`**.
+This folder contains ready-to-use, pure-Markdown (**2.5–3.4 KB** each) **Finance Skills (`SKILL.md`)** designed so **non-technical finance professionals** can run institutional Excel, Word, and PowerPoint workflows in plain English—powered by **`m365-mac-mcp`**.
 
 Every skill follows a strict **5-block low-token blueprint** (*Trigger & Scope → Pre-Flight / HALT → Exact Tool Sequence → IFRS / FASB / SOX 404 Guardrails → Verification Gate*), keeping local LLMs (such as **`Qwen3.6 35B A3B — Q8_0`** in Bionic / LM Studio) fast, auditable, and hallucination-free.
 
@@ -17,8 +17,8 @@ Before using these skills, make sure **`m365-mac-mcp`** is installed and connect
 
 Recommended MCP environment variables *(all optional — if omitted or left blank in Bionic, the server automatically applies its safe defaults: `full`, `auto`, `literals_only`)*:
 - `OFFICE_MCP_PROFILE`:
-  - **`EXCEL`** *(50 tools, ~5.1K schema tokens)* — covers 6 of the 7 skills (`wall-street-formatter`, `model-auditor`, `live-what-if-runner`, `three-statement-projector`, `capex-project-analyzer`, `dcf-investment-template-builder`).
-  - **`FULL`** *(82 tools, ~8.0K schema tokens)* or **`EXCEL,WORD`** — required for **`boardroom-brief-generator`** (Excel → Word/PDF/PowerPoint).
+  - **`EXCEL,COMPACT`** *(25 tools, ~2.4K schema tokens — recommended)* or **`EXCEL`** *(50 tools, ~4.8K)* — covers all 6 Excel skills (`wall-street-formatter`, `model-auditor`, `live-what-if-runner`, `three-statement-projector`, `capex-project-analyzer`, `dcf-investment-template-builder`), including `create_chart`, `delete_worksheet`, and `excel_live_list_workbooks`.
+  - **`FULL`** *(82 tools, ~7.4K schema tokens)* or **`EXCEL,WORD`** — required for **`boardroom-brief-generator`** (Excel → Word/PDF/PowerPoint).
 - `OFFICE_MCP_LIVE_SYNC=AUTO` — automatically reloads your open Excel window and restores your exact sheet, zoom, and selection after `save_workbook` (and refuses to overwrite if you have unsaved edits).
 - `OFFICE_MCP_FORMULA_GUARD=LITERALS_ONLY` *(default)* — blocks any accidental overwrite of an existing formula with a hardcoded number or blank (`STRICT` blocks even Formula → Formula edits on finalized models).
 
@@ -29,8 +29,8 @@ Recommended MCP environment variables *(all optional — if omitted or left blan
 ### Option A: Bionic / LM Studio (Recommended Local Apple Silicon Setup)
 1. Open **Bionic → Settings → Skills**.
 2. Click **Add / Import Skill** and select the `skills/` folder (or individual `skills/<skill-name>/SKILL.md` files).
-3. **Recommended Finance System Prompt (`V3.3`):**  
-   Copy [`Sample Model Config/SYSTEM_PROMPT.md`](../Sample%20Model%20Config/SYSTEM_PROMPT.md) (`UNIVERSAL STERLING ENGINE V3.3 — FINANCE & M365 SPECIALIST`) into your Bionic **Finance Project** System Prompt. It already narrows the Office block to `.internal/skills/.../SKILL.md` so your custom `skills/` playbooks load cleanly, enforces `OFFICE_MCP_FORMULA_GUARD`, and prevents mental calculation of uncached `openpyxl` formulas.
+3. **Recommended Finance System Prompt (`V3.4`):**  
+   Copy [`Sample Model Config/SYSTEM_PROMPT.md`](../Sample%20Model%20Config/SYSTEM_PROMPT.md) (`UNIVERSAL STERLING ENGINE V3.4 — FINANCE & M365 SPECIALIST`) into your Bionic **Finance Project** System Prompt. It blocks Bionic's built-in Office viewer, shell/Python bypasses, and `.internal/skills/.../SKILL.md` while letting your custom Finance skills load cleanly, enforces `OFFICE_MCP_FORMULA_GUARD`, and prevents mental calculation of uncached `openpyxl` formulas.
    > **Disclosure:** Applying `Sample Model Config/SYSTEM_PROMPT.md` **highly customizes the model for financial modeling, corporate valuation, Excel/VBA, and Microsoft 365 work only**. If you also use Bionic / LM Studio for general-purpose chat or non-finance software development, apply it to a dedicated Finance Project instead of your global default prompt.
 4. Toggle your `m365-mac-mcp` MCP connection **OFF → ON** if you changed any environment variables.
 

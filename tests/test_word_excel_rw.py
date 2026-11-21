@@ -832,7 +832,18 @@ async def test_mcp_server_compact_profile_reduces_tools():
 
     # Verify composable app profiles: excel,compact (~31), word,powerpoint (~33), and invalid fallback
     for prof, must_have, must_not_have in (
-        ("excel,compact", {"inspect_workbook", "audit_workbook_formulas", "excel_live_batch_write_cells"}, {"create_document", "create_presentation"}),
+        (
+            "excel,compact",
+            {
+                "inspect_workbook",
+                "audit_workbook_formulas",
+                "excel_live_batch_write_cells",
+                "create_chart",
+                "delete_worksheet",
+                "excel_live_list_workbooks",
+            },
+            {"create_document", "create_presentation", "format_worksheet", "add_formula"},
+        ),
         ("word,powerpoint", {"create_document", "word_live_list_documents", "create_presentation"}, {"open_workbook", "excel_live_open"}),
         ("invalid_profile_xyz", {"open_workbook", "create_document", "create_presentation"}, set()),
     ):
@@ -1625,3 +1636,17 @@ def test_all_finance_skills_valid_schema_size_and_compliance():
                 sig_params = set(tools_map[fn_name].parameters.get("properties", {}).keys())
                 for kw in re.findall(r"([a-z_]+)\s*=", arg_str):
                     assert kw in sig_params, f"{p.parent.name}: invalid param '{kw}' on tool '{fn_name}'"
+
+
+@pytest.mark.asyncio
+async def test_create_workbook_multi_sheet_names_one_call():
+    """Verify create_workbook(sheet_names=[...]) creates all requested tabs in ONE call with no blank Sheet1."""
+    res = await server.create_workbook(
+        title="3-Statement Model",
+        sheet_names=["Income Statement", "Balance Sheet", "Cash Flow"],
+    )
+    assert res["status"] if "status" in res else res["workbook_id"]
+    assert res["worksheets"] == ["Income Statement", "Balance Sheet", "Cash Flow"]
+    assert res["worksheet_count"] == 3
+    assert res["active_sheet"] == "Income Statement"
+    await server.close_workbook(res["workbook_id"])

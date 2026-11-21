@@ -105,10 +105,8 @@ _REGISTERED_TOOL_NAMES: List[str] = []
 mcp = _ServerClass(
     "Microsoft 365 for Mac MCP",
     instructions=(
-        "macOS Microsoft Office MCP server for Word, Excel, and PowerPoint. "
-        "Use file-level tools (open_document/create_document, open_workbook/create_workbook, "
-        "inspect_workbook, audit_workbook_formulas) for fast, deterministic .docx/.xlsx/.xlsm/.csv "
-        "workflows, and use word_live_* / excel_live_* tools to control open Microsoft Word and Excel windows."
+        "macOS Microsoft 365 MCP (Excel, Word, PowerPoint). "
+        "Prefer batch file tools for edits/formatting and *_live_* tools for live Excel recalc."
     ),
 )
 
@@ -689,15 +687,17 @@ async def create_workbook(
     title: str = "New Workbook",
     template_path: Optional[str] = None,
     sheet_name: str = "Sheet1",
+    sheet_names: Optional[List[str]] = None,
     include_title_header: bool = False,
     open_in_excel: bool = False,
 ) -> Dict[str, Any]:
-    """Create a new Excel workbook (.xlsx) for file-level reading and writing."""
+    """Create a new Excel workbook (.xlsx). Pass sheet_names=['IS','BS','CF'] to create multiple tabs in one call."""
     try:
         return await excel.create_workbook(
             title=title,
             template_path=template_path,
             sheet_name=sheet_name,
+            sheet_names=sheet_names,
             include_title_header=include_title_header,
             open_in_excel=open_in_excel,
         )
@@ -754,7 +754,7 @@ async def rename_worksheet(
         return _error_response("rename_worksheet", exc)
 
 
-@_tool(app="excel", compact=False)
+@_tool(app="excel")
 async def delete_worksheet(workbook_id: str, sheet_name: str) -> Dict[str, Any]:
     """Delete a worksheet from an open workbook."""
     try:
@@ -776,7 +776,7 @@ async def set_active_worksheet(workbook_id: str, sheet_name: str) -> Dict[str, A
         return _error_response("set_active_worksheet", exc)
 
 
-@_tool(app="excel")
+@_tool(app="excel", compact=False)
 async def read_cell(
     workbook_id: str,
     cell: str,
@@ -820,7 +820,7 @@ async def read_range(
         return _error_response("read_range", exc)
 
 
-@_tool(app="excel")
+@_tool(app="excel", compact=False)
 async def read_tables(
     workbook_id: str,
     sheet_name: Optional[str] = None,
@@ -897,7 +897,7 @@ async def write_cell(
         return _error_response("write_cell", exc)
 
 
-@_tool(app="excel")
+@_tool(app="excel", compact=False)
 async def write_range(
     workbook_id: str,
     sheet_name: Optional[str],
@@ -924,7 +924,7 @@ async def write_range(
         return _error_response("write_range", exc)
 
 
-@_tool(app="excel")
+@_tool(app="excel", compact=False)
 async def add_formula(
     workbook_id: str,
     sheet_name: Optional[str],
@@ -1000,7 +1000,7 @@ async def format_range(
         return _error_response("format_range", exc)
 
 
-@_tool(app="excel")
+@_tool(app="excel", compact=False)
 async def format_worksheet(
     workbook_id: str,
     sheet_name: Optional[str] = None,
@@ -1077,7 +1077,7 @@ async def list_cell_styles(workbook_id: str) -> Dict[str, Any]:
         return _error_response("list_cell_styles", exc)
 
 
-@_tool(app="excel")
+@_tool(app="excel", compact=False)
 async def apply_cell_style(
     workbook_id: str,
     sheet_name: Optional[str],
@@ -1200,7 +1200,7 @@ async def add_excel_table(
         return _error_response("add_excel_table", exc)
 
 
-@_tool(app="excel")
+@_tool(app="excel", compact=False)
 async def update_excel_table_style(
     workbook_id: str,
     table_name: str,
@@ -1227,7 +1227,7 @@ async def update_excel_table_style(
         return _error_response("update_excel_table_style", exc)
 
 
-@_tool(app="excel", compact=False)
+@_tool(app="excel")
 async def create_chart(
     workbook_id: str,
     sheet_name: Optional[str],
@@ -1287,7 +1287,7 @@ async def close_workbook(
 # EXCEL LIVE-APP TOOLS (Microsoft Excel 16.115 via AppleScript)
 # ======================================================================
 
-@_tool(app="excel", compact=False)
+@_tool(app="excel")
 async def excel_live_list_workbooks() -> Dict[str, Any]:
     """List all workbooks currently open in the live Microsoft Excel app (with sheets)."""
     try:
@@ -1375,7 +1375,7 @@ async def excel_live_activate_worksheet(
         return _error_response("excel_live_activate_worksheet", exc)
 
 
-@_tool(app="excel")
+@_tool(app="excel", compact=False)
 async def excel_live_read_range(
     range_ref: Optional[str] = None,
     cell_range: Optional[str] = None,
@@ -1425,7 +1425,7 @@ async def excel_live_write_cell(
         return _error_response("excel_live_write_cell", exc)
 
 
-@_tool(app="excel")
+@_tool(app="excel", compact=False)
 async def excel_live_write_range(
     start_cell: str,
     data: List[List[Any]],

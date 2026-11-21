@@ -203,10 +203,11 @@ class ExcelController:
         title: str = "New Workbook",
         template_path: Optional[str] = None,
         sheet_name: str = "Sheet1",
+        sheet_names: Optional[List[str]] = None,
         include_title_header: bool = False,
         open_in_excel: bool = False,
     ) -> Dict[str, Any]:
-        """Create a new Excel workbook (.xlsx)."""
+        """Create a new Excel workbook (.xlsx), optionally with multiple worksheets in one call."""
         self._evict_if_needed()
         workbook_id = str(uuid.uuid4())
         keep_vba = False
@@ -220,7 +221,14 @@ class ExcelController:
         else:
             wb = Workbook()
             ws = wb.active
-            ws.title = sheet_name or "Sheet1"
+            clean_names = [str(n).strip() for n in (sheet_names or []) if str(n).strip()]
+            if clean_names:
+                ws.title = clean_names[0][:31]
+                for extra_name in clean_names[1:]:
+                    if extra_name[:31] not in wb.sheetnames:
+                        wb.create_sheet(title=extra_name[:31])
+            else:
+                ws.title = (sheet_name or "Sheet1")[:31]
             if include_title_header and title:
                 ws["A1"] = title
                 ws["A1"].font = Font(bold=True, size=14)
