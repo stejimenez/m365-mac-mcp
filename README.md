@@ -69,6 +69,13 @@ This server combines **fast file-level manipulation** (`openpyxl`, `python-docx`
 - Insert text, images, and speaker notes
 - Save presentations in multiple formats
 
+### Finance Skills *(Work in Progress)*
+Ready-to-use, pure-Markdown (**3–4 KB** each) **IFRS / FASB / SOX-compliant Finance Skills** live in [`skills/`](skills/) so non-technical finance professionals can run complex workflows in plain English:
+- **Wall Street Formatter** (`wall-street-formatter`) · **Model Auditor** (`model-auditor`) · **Live What-If Runner** (`live-what-if-runner`)
+- **3-Statement Projector** (`three-statement-projector`) · **CapEx Project Analyzer** (`capex-project-analyzer`) · **DCF & Valuation Template Builder** (`dcf-investment-template-builder`) · **Boardroom Brief Generator** (`boardroom-brief-generator`)
+
+> **Full Installation & Plain-English Usage Guide (WIP):** See [**`skills/README.md`**](skills/README.md).
+
 ---
 
 ## Prerequisites
