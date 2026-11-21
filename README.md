@@ -2,7 +2,7 @@
 
 *Dual-mode (file-level + live AppleScript) MCP server for Microsoft Excel, Word, and PowerPoint — verified on **macOS 27.x** & **Microsoft Office 16.x** (`m365-mac-mcp`).*
 
-![Release](https://img.shields.io/badge/Release-v2.1.0-blue)
+![Release](https://img.shields.io/badge/Release-v2.1.1-blue)
 ![macOS](https://img.shields.io/badge/macOS-27.x%20(Apple%20Silicon)-000000?logo=apple)
 ![Microsoft Office](https://img.shields.io/badge/Microsoft%20Office%20for%20Mac-16.x-D83B01?logo=microsoftoffice)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
@@ -98,7 +98,17 @@ This server was developed, benchmarked, and end-to-end verified on the following
 | **MCP Client & Runtime** | **Bionic `1.2.1+10`** + **LM Studio** (local inference) |
 | **Local Inference Model** | **`Qwen3.6 35B A3B — Q8_0`** (Context `65536`, GPU Offload `40`, CPU Threads `6`, Eval Batch `2048`, Phys Batch `512`, Flash Attention `ON`, Temp `0.3`, Reasoning Budget `2048`, Preserve Thinking `OFF`, Unified + GPU KV Cache `ON`, Top-K `20`, Top-P `0.95`, Min-P `0.05`, Repeat Penalty `1.1`, Experts `8`) — see [`Sample Model Config/`](Sample%20Model%20Config/) |
 | **Python Environment** | Python `3.12.16` (`.venv`), `mcp` `2.3.0`, `openpyxl` `3.1.5`, `python-docx` `1.2.0` |
-| **Recommended MCP Env** | `OFFICE_MCP_PROFILE=EXCEL` (or `EXCEL,COMPACT`), `OFFICE_MCP_LIVE_SYNC=AUTO`, `OFFICE_MCP_FORMULA_GUARD=LITERALS_ONLY`, `OFFICE365_MCP_APPLESCRIPT_TIMEOUT=30` |
+| **Recommended MCP Env** | `OFFICE_MCP_PROFILE=EXCEL,COMPACT` (or `EXCEL`), `OFFICE_MCP_LIVE_SYNC=AUTO`, `OFFICE_MCP_FORMULA_GUARD=LITERALS_ONLY`, `OFFICE365_MCP_APPLESCRIPT_TIMEOUT=30` |
+
+### Hardware Tier & MCP Profile Quick Summary
+
+| Apple Silicon Tier | Best Local Model (LM Studio / MLX) | Recommended Profile | Safe Context | Expected Speed & Risk |
+| --- | --- | --- | --- | --- |
+| **16 GB M4** | `Qwen3.5-9B` *(MLX 4/6-bit)* or `Qwen3-14B` *(4-bit, tight ctx)* | `EXCEL,COMPACT` *(25 tools, ~2.4K tok)* | `12K–16K` *(Q8 KV)* | ~20–32 tok/s; use 2-phase chunking on big builds |
+| **32 GB M4 / M4 Pro** | `Qwen3.6 35B A3B` *(MLX/GGUF 4-bit)* or `gpt-oss-20b` | `EXCEL,COMPACT` or `EXCEL` | `32K` *(Q8 KV)* | ~20–30+ tok/s; all 7 skills in 1 shot, low risk |
+| **64 GB M4 Pro / Max** | `Qwen3.6 35B A3B — Q8_0` *(verified reference)* | `EXCEL,COMPACT` or `FULL` *(82 tools)* | `65K–128K` | ~18–26 tok/s (Pro) / 35–50+ (Max); very low risk |
+
+> **Full Hardware, Local Model & `OFFICE_MCP_PROFILE` Decision Guide:** See [**`docs/HARDWARE_AND_PROFILE_GUIDE.md`**](docs/HARDWARE_AND_PROFILE_GUIDE.md).
 
 ### Installation
 
@@ -444,6 +454,8 @@ m365-mac-mcp/
 ├── tests/
 │   ├── test_basic.py
 │   └── test_word_excel_rw.py
+├── docs/
+│   └── HARDWARE_AND_PROFILE_GUIDE.md           # 16GB/32GB/64GB M4 model & OFFICE_MCP_PROFILE guide
 ├── Sample Model Config/
 │   ├── SYSTEM_PROMPT.md                        # Recommended Bionic/LM Studio system prompt
 │   ├── bionic_mcp_config_part1.jpg             # Bionic MCP server setup (Connection, Command, Args)

@@ -9,6 +9,14 @@ This project follows [Semantic Versioning (`MAJOR.MINOR.PATCH`)](https://semver.
 
 ---
 
+## [v2.1.1] - 2026-11-21
+
+### Added
+- **Hardware, Local Model & MCP Profile Guide (`docs/HARDWARE_AND_PROFILE_GUIDE.md`):** Comprehensive Apple Silicon (16 GB / 32 GB / 64 GB M4, M4 Pro, M4 Max) local model recommendations (MLX & GGUF) and a full 8-profile `OFFICE_MCP_PROFILE` performance, skill-compatibility, and hallucination-risk matrix.
+- **Main README Summary:** Added a compact Hardware Tier & MCP Profile quick-reference table in `README.md` linking to `docs/HARDWARE_AND_PROFILE_GUIDE.md`.
+
+---
+
 ## [v2.1.0] - 2026-11-21
 
 ### Added
