@@ -204,7 +204,8 @@ Register two entries pointing to the same server `.venv`:
 - **Generation & Reasoning:** `Temperature = 0.3`, `Context Overflow = Stop at Limit`, `Reasoning Budget = 2048` (`"I have to answer now."`), `Preserve Thinking = OFF`
 - **Memory:** `Offload KV Cache to GPU = ON`, `Unified KV Cache = ON`, `Context Checkpoints = 32`, `Keep Model in Memory = ON`, `Try mmap() = ON`, `Speculative Decoding = Off`
 - **Sampling:** `Top K = 20`, `Top P = 0.95`, `Min P = 0.05`, `Repeat Penalty = 1.1`, `Number of Experts = 8`
-- **System Prompt:** Copy [`Sample Model Config/SYSTEM_PROMPT.md`](Sample%20Model%20Config/SYSTEM_PROMPT.md) (`UNIVERSAL STERLING ENGINE V3.2`) into Bionic/LM Studio's System Prompt so the agent stays concise, avoids tool loops, and always uses Office Mac MCP tools directly instead of Bionic's built-in viewer or `.internal/skills/.../SKILL.md`.
+- **System Prompt:** Copy [`Sample Model Config/SYSTEM_PROMPT.md`](Sample%20Model%20Config/SYSTEM_PROMPT.md) (`UNIVERSAL STERLING ENGINE V3.3 — FINANCE & M365 SPECIALIST`) into Bionic/LM Studio's System Prompt so the agent stays concise, avoids tool loops, respects `OFFICE_MCP_FORMULA_GUARD`, uses custom Finance `skills/`, and never falls back to Bionic's built-in viewer or `.internal/skills/.../SKILL.md`.
+  > **Disclosure:** Applying `Sample Model Config/SYSTEM_PROMPT.md` **highly customizes the model for financial modeling, corporate valuation, Excel/VBA, and Microsoft 365 work only**. If you also use Bionic / LM Studio for general chat or non-finance coding, apply this prompt inside a dedicated Finance Project rather than as your global default.
 
 #### For Claude Desktop
 Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
@@ -393,10 +394,10 @@ Run the unit and integration test suite with the project virtual environment:
 .venv/bin/pytest tests/test_basic.py tests/test_word_excel_rw.py -v
 ```
 
-This runs **27 tests** covering:
+This runs **28 tests** covering:
 - Excel file-level read/write, batch formatting, named styles, tables, data validation, formula sheet-reference auto-quoting & auditing, `OFFICE_MCP_FORMULA_GUARD` (`literals_only`/`strict`/`off`), and `OFFICE_MCP_LIVE_SYNC` view-restore / unsaved-edits protection.
 - Word file-level creation, rich paragraph/table styling, search & replace, and `.docx` XML attributes (`w:tblHeader`, borders, shading, widths).
-- Composable `OFFICE_MCP_PROFILE` filtering, compact JSON responses, stripped schema noise, sparse A1 formula maps, and trimmed blank cells.
+- Composable `OFFICE_MCP_PROFILE` filtering, compact JSON responses, stripped schema noise, sparse A1 formula maps, trimmed blank cells, and automated validation of all 7 Finance `skills/*/SKILL.md` playbooks.
 - Hardened AppleScript generation and parsing for Excel `16.115` and Word `16.115.1`.
 
 ---

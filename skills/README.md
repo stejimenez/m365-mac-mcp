@@ -29,11 +29,9 @@ Recommended MCP environment variables:
 ### Option A: Bionic / LM Studio (Recommended Local Apple Silicon Setup)
 1. Open **Bionic → Settings → Skills**.
 2. Click **Add / Import Skill** and select the `skills/` folder (or individual `skills/<skill-name>/SKILL.md` files).
-3. **Important System Prompt Adjustment:**  
-   If you are using [`Sample Model Config/SYSTEM_PROMPT.md`](../Sample%20Model%20Config/SYSTEM_PROMPT.md), update the final bullet so it blocks **only** Bionic's built-in generic Office skill while allowing your custom `skills/` playbooks:
-   ```text
-   - OFFICE FILES (.xlsx, .xlsm, .docx, .pptx): NEVER use Bionic's built-in Open/viewer tool and NEVER read `.internal/skills/.../SKILL.md` for Office documents. Always use Office Mac MCP tools and your custom Finance `skills/` playbooks directly.
-   ```
+3. **Recommended Finance System Prompt (`V3.3`):**  
+   Copy [`Sample Model Config/SYSTEM_PROMPT.md`](../Sample%20Model%20Config/SYSTEM_PROMPT.md) (`UNIVERSAL STERLING ENGINE V3.3 — FINANCE & M365 SPECIALIST`) into your Bionic **Finance Project** System Prompt. It already narrows the Office block to `.internal/skills/.../SKILL.md` so your custom `skills/` playbooks load cleanly, enforces `OFFICE_MCP_FORMULA_GUARD`, and prevents mental calculation of uncached `openpyxl` formulas.
+   > **Disclosure:** Applying `Sample Model Config/SYSTEM_PROMPT.md` **highly customizes the model for financial modeling, corporate valuation, Excel/VBA, and Microsoft 365 work only**. If you also use Bionic / LM Studio for general-purpose chat or non-finance software development, apply it to a dedicated Finance Project instead of your global default prompt.
 4. Toggle your `m365-mac-mcp` MCP connection **OFF → ON** if you changed any environment variables.
 
 ### Option B: Claude Desktop / Cline (VS Code)

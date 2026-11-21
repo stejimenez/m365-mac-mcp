@@ -1350,6 +1350,7 @@ async def test_token_optimizations_compact_json_schema_and_sparse_formulas(monke
         schema_str = json.dumps(params)
         assert '"default": null' not in schema_str, f"{name} still has redundant 'default': null"
         assert '{"type": "null"}' not in schema_str, f"{name} still has verbose nullable anyOf"
+        assert '"additionalProperties": true' not in schema_str, f"{name} still has redundant additionalProperties: true"
     assert "title" in tools_map["create_workbook"].parameters["properties"]
     assert "title" in tools_map["create_document"].parameters["properties"]
     assert "title" in tools_map["create_presentation"].parameters["properties"]
@@ -1597,3 +1598,30 @@ async def test_office_mcp_formula_guard_file_and_live(monkeypatch):
     st = await server.check_office_status()
     assert st["profile"]["formula_guard_mode"] == "literals_only"
     assert st["profile"]["available_formula_guard_modes"] == ["literals_only", "strict", "off"]
+
+
+def test_all_finance_skills_valid_schema_size_and_compliance():
+    """Verify every skills/*/SKILL.md is pure Markdown (2-4 KB), 5-block, IFRS/FASB/SOX compliant, and references valid tools/params."""
+    import re
+
+    skills_root = Path(__file__).resolve().parent.parent / "skills"
+    skill_files = sorted(skills_root.glob("*/SKILL.md"))
+    assert len(skill_files) >= 7
+
+    tools_map = server.mcp._tool_manager._tools
+    valid_tools = set(tools_map.keys())
+
+    for p in skill_files:
+        txt = p.read_text(encoding="utf-8")
+        size_bytes = len(txt.encode("utf-8"))
+        assert 2048 <= size_bytes <= 4096, f"{p.parent.name} size {size_bytes}B outside 2-4 KB target"
+        assert txt.startswith("---\nname:") and "\ndescription:" in txt, f"{p.parent.name} missing YAML frontmatter"
+        for idx in range(1, 6):
+            assert f"## {idx}." in txt, f"{p.parent.name} missing section ## {idx}."
+        assert "IFRS" in txt and "FASB" in txt and "SOX" in txt, f"{p.parent.name} missing IFRS/FASB/SOX compliance"
+
+        for fn_name, arg_str in re.findall(r"([a-z][a-z0-9_]+)\(([^)\n]*)\)", txt):
+            if fn_name in valid_tools:
+                sig_params = set(tools_map[fn_name].parameters.get("properties", {}).keys())
+                for kw in re.findall(r"([a-z_]+)\s*=", arg_str):
+                    assert kw in sig_params, f"{p.parent.name}: invalid param '{kw}' on tool '{fn_name}'"

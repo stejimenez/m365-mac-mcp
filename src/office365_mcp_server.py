@@ -142,6 +142,8 @@ def _compact_json_schema(node: Any, is_properties_map: bool = False) -> None:
                     node.update(merged)
             if "default" in node and node["default"] is None:
                 node.pop("default", None)
+            if node.get("additionalProperties") is True:
+                node.pop("additionalProperties", None)
         for k, v in node.items():
             _compact_json_schema(v, is_properties_map=(k == "properties"))
     elif isinstance(node, list):
