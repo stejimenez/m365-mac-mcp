@@ -19,6 +19,7 @@ This MCP server interacts with local files and macOS Microsoft Office applicatio
 - **Parameterized AppleScript Execution:** All live Excel and Word AppleScript invocations run via `osascript -` with arguments passed strictly through `argv` (never shell or AppleScript string interpolation), preventing command/script injection.
 - **Serialized, Timeout-Guarded Automation:** `osascript` calls are serialized per event loop via `asyncio.Lock` and bounded by `OFFICE365_MCP_APPLESCRIPT_TIMEOUT` (default `30s`).
 - **Formula & External Link Guard:** Formula writes automatically quote spaced sheet names and block/flag references to non-existent sheets or external workbooks (`[...]`) before touching live Excel, preventing unexpected modal file pickers and stray external links.
+- **Formula Overwrite Guard (`OFFICE_MCP_FORMULA_GUARD`):** Defaults to `literals_only` (atomically blocks Formula → Hardcoded Literal / Blank overwrites across all 6 Excel write tools until the user explicitly approves via `allow_formula_overwrite=true`; `strict` blocks any formula overwrite).
 - **Unsaved-Edits Protection (`OFFICE_MCP_LIVE_SYNC`):** In `auto` sync mode, `save_workbook` refuses to overwrite a workbook that has unsaved manual edits in live Microsoft Excel.
 - **macOS Sandbox Hygiene:** Unnamed temporary `/tmp` files are never auto-opened in live Word/Excel, avoiding macOS sandbox **Grant Access** prompts.
 

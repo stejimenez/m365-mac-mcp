@@ -138,6 +138,8 @@ This server was developed, benchmarked, and end-to-end verified on the following
 
 ### Environment Variables
 
+> All environment variables are **optional** — if omitted or left blank in Bionic, Claude Desktop, or Cline, the server automatically applies the documented defaults below.
+
 | Variable | Default | Description |
 | --- | --- | --- |
 | `OFFICE_MCP_PROFILE` | `full` | Comma-separated, case-insensitive tool profile filter (see table below). |
@@ -161,11 +163,11 @@ To keep context usage low and tool selection fast on local models (such as LM St
 | `word,powerpoint` | 33 | ~2.9K | Secondary MCP entry for Word + PowerPoint |
 | `compact` | 44 | ~4.8K | Core Excel + Word tools combined |
 | `excel,word` | 75 | ~7.4K | Full Excel + Word without PowerPoint |
-| `full` *(default)* | 82 | ~8.0K | All Excel, Word, and PowerPoint tools |
+| `full` *(default)* | 82 | ~7.4K | All Excel, Word, and PowerPoint tools |
 
 - Values are **case-insensitive** (`EXCEL,COMPACT`, `Excel,Compact`, `excel,compact`, or `XLS,Compact` are equivalent) and accept any comma-separated combination of `excel` (`xls`/`xlsx`), `word` (`doc`/`docx`), `powerpoint` (`ppt`/`pptx`), and `compact`.
 - Unknown values log a warning to `stderr` and fall back safely to `full`.
-- Call `check_office_status` (or read `office365://status`) at any time to inspect the active profile, registered tool count, and `live_sync_mode`.
+- Call `check_office_status` (or read `office365://status`) at any time to inspect the active profile, registered tool count, `live_sync_mode`, and `formula_guard_mode`.
 
 ### Live Excel Auto-Sync (`OFFICE_MCP_LIVE_SYNC`)
 

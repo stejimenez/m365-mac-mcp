@@ -15,7 +15,7 @@ Every skill follows a strict **5-block low-token blueprint** (*Trigger & Scope �
 
 Before using these skills, make sure **`m365-mac-mcp`** is installed and connected in your MCP client (see the root [`README.md`](../README.md)).
 
-Recommended MCP environment variables:
+Recommended MCP environment variables *(all optional — if omitted or left blank in Bionic, the server automatically applies its safe defaults: `full`, `auto`, `literals_only`)*:
 - `OFFICE_MCP_PROFILE`:
   - **`EXCEL`** *(50 tools, ~5.1K schema tokens)* — covers 6 of the 7 skills (`wall-street-formatter`, `model-auditor`, `live-what-if-runner`, `three-statement-projector`, `capex-project-analyzer`, `dcf-investment-template-builder`).
   - **`FULL`** *(82 tools, ~8.0K schema tokens)* or **`EXCEL,WORD`** — required for **`boardroom-brief-generator`** (Excel → Word/PDF/PowerPoint).
