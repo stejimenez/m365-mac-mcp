@@ -1801,3 +1801,292 @@ async def test_v22_efficiency_and_safety_improvements(monkeypatch, tmp_path: Pat
     await server.save_workbook(wb2, str(disk_file), format="xlsx")
     assert disk_file.read_bytes() != orig_bytes
     await server.close_workbook(wb2)
+
+
+@pytest.mark.asyncio
+async def test_optional_workbook_id_auto_resolution(tmp_path: Path):
+    """Verify batch/save/close tools auto-resolve workbook_id when 1 workbook is active and reject 0 or >1."""
+    # Ensure clean active workbook map
+    for existing_id in list(server.excel.active_workbooks.keys()):
+        await server.close_workbook(existing_id)
+
+    # 0 active workbooks -> clear error
+    err0 = await server.batch_write_ranges(
+        operations=[{"sheet_name": "Sheet", "start_cell": "A1", "data": [["x"]]}]
+    )
+    assert err0["status"] == "error"
+    assert "No active workbooks" in err0["error"]
+
+    # 1 active workbook -> auto-resolves across batch_write_ranges, batch_format_workbook, save_workbook, close_workbook
+    created = await server.create_workbook(title="AutoResolve", sheet_names=["Summary"])
+    wb_id = created["workbook_id"]
+
+    bw = await server.batch_write_ranges(
+        operations=[{"sheet_name": "Summary", "start_cell": "A1", "data": [["Metric", "Val"], ["NPV", 12.5]]}]
+    )
+    assert bw["status"] == "success"
+    assert bw["workbook_id"] == wb_id
+
+    bf = await server.batch_format_workbook(
+        operations=[{"sheet_name": "Summary", "freeze_panes": "B2"}]
+    )
+    assert bf["status"] == "success"
+    assert bf["workbook_id"] == wb_id
+
+    out_path = tmp_path / "auto_resolve.xlsx"
+    sv = await server.save_workbook(file_path=str(out_path))
+    assert sv["status"] == "success"
+    assert out_path.exists()
+
+    # 2 active workbooks -> omitting workbook_id must error clearly
+    created2 = await server.create_workbook(title="SecondWB", sheet_names=["S1"])
+    wb2_id = created2["workbook_id"]
+    err2 = await server.batch_write_ranges(
+        operations=[{"sheet_name": "S1", "start_cell": "A1", "data": [["y"]]}]
+    )
+    assert err2["status"] == "error"
+    assert "multiple workbooks" in err2["error"].lower()
+
+    await server.close_workbook(wb2_id)
+    # Back to 1 active workbook -> close_workbook(None) succeeds
+    cl = await server.close_workbook()
+    assert cl["status"] == "success"
+    assert cl["workbook_id"] == wb_id
+
+
+@pytest.mark.asyncio
+async def test_batch_write_ranges_accepts_range_cell_and_sheet_aliases():
+    """Verify batch_write_ranges resolves range/cell_range/cell/sheet/values aliases instead of silently defaulting to A1."""
+    created = await server.create_workbook(title="AliasTest", sheet_names=["Cash Flows"])
+    wb_id = created["workbook_id"]
+    try:
+        res = await server.batch_write_ranges(
+            workbook_id=wb_id,
+            operations=[
+                {"sheet": "Cash Flows", "range": "A1:B1", "values": [["Header", "Y1"]]},
+                {"sheet_name": "Cash Flows", "cell_range": "A5:B5", "data": [["Rev", 100]]},
+                {"sheet_name": "Cash Flows", "cell": "'Cash Flows'!C10", "data": [[250]]},
+            ],
+        )
+        assert res["status"] == "success"
+        ranges = [op["range"] for op in res["results"]]
+        assert ranges == ["A1:B1", "A5:B5", "C10:C10"]
+
+        r = await server.read_range(wb_id, "Cash Flows", "A1:C10")
+        assert r["data"][0][:2] == ["Header", "Y1"]
+        assert r["data"][4][:2] == ["Rev", 100]
+        assert r["data"][9][2] == 250
+
+        # Auto-orient transposed Nx1 data into explicit 1xN horizontal range, 1xN into Nx1 vertical, and flat 1D list
+        orient = await server.batch_write_ranges(
+            workbook_id=wb_id,
+            operations=[
+                {"sheet_name": "Cash Flows", "range": "B12:E12", "data": [[0.8], [0.9], [1.0], [1.1]]},
+                {"sheet_name": "Cash Flows", "range": "A13:A15", "data": [["WACC1", "WACC2", "WACC3"]]},
+                {"sheet_name": "Cash Flows", "range": "B13:D13", "data": [10, 20, 30]},
+            ],
+        )
+        assert orient["status"] == "success"
+        r2 = await server.read_range(wb_id, "Cash Flows", "A12:E15")
+        assert r2["data"][0][1:5] == [0.8, 0.9, 1.0, 1.1]
+        assert [r2["data"][1][0], r2["data"][2][0], r2["data"][3][0]] == ["WACC1", "WACC2", "WACC3"]
+        assert r2["data"][1][1:4] == [10, 20, 30]
+    finally:
+        await server.close_workbook(wb_id)
+
+
+@pytest.mark.asyncio
+async def test_live_open_blocks_internal_temp_uuid_files():
+    """Verify excel_live_open and word_live_open reject internal /tmp and macOS /var/folders temp UUID paths."""
+    for p in [
+        "/tmp/m365-mac-mcp/excel/2dd3c267-a440-4415-ac4a-86d21acc80a1.xlsx",
+        str(server.excel.temp_dir / "ea1bbebc-87b9-4dfa-8d7c-b61c6924305a.xlsx"),
+    ]:
+        res_xl = await server.excel_live_open(p)
+        assert res_xl["status"] == "error"
+        assert "Grant Access" in res_xl["error"]
+        assert "save_workbook" in res_xl["error"]
+
+    for p in [
+        "/tmp/m365-mac-mcp/word/2dd3c267-a440-4415-ac4a-86d21acc80a1.docx",
+        str(server.word.temp_dir / "ea1bbebc-87b9-4dfa-8d7c-b61c6924305a.docx"),
+    ]:
+        res_wd = await server.word_live_open(p)
+        assert res_wd["status"] == "error"
+        assert "Grant Access" in res_wd["error"]
+        assert "save_document" in res_wd["error"]
+
+
+@pytest.mark.asyncio
+async def test_live_close_bool_coercion_read_range_alias_and_live_error_surfacing(monkeypatch):
+    """Verify excel_live_close/word_live_close accept bool save_changes, read_range accepts range=, and live batch reads surface #VALUE!/#DIV/0!."""
+    # 1. read_range accepts range= alias + auto-resolves workbook_id
+    for existing_id in list(server.excel.active_workbooks.keys()):
+        await server.close_workbook(existing_id)
+    created = await server.create_workbook(title="ErrSurface", sheet_names=["S1"])
+    wb_id = created["workbook_id"]
+    try:
+        await server.batch_write_ranges(
+            operations=[{"sheet_name": "S1", "start_cell": "A1", "data": [["Rev", 100], ["Cost", 60]]}]
+        )
+        r = await server.read_range(sheet_name="S1", range="A1:B2")
+        assert r["status"] == "success"
+        assert r["data"] == [["Rev", 100], ["Cost", 60]]
+    finally:
+        await server.close_workbook(wb_id)
+
+    # 2. excel_live_close & word_live_close coerce bool save_changes -> 'yes'/'no'
+    seen: list = []
+
+    async def fake_close_excel(workbook_name=None, save_changes="no"):
+        seen.append(("excel", workbook_name, save_changes))
+        return {"status": "success", "save_changes": save_changes}
+
+    async def fake_close_word(document_name=None, save_changes="no"):
+        seen.append(("word", document_name, save_changes))
+        return {"status": "success", "save_changes": save_changes}
+
+    monkeypatch.setattr(server.applescript, "close_excel_workbook", fake_close_excel)
+    monkeypatch.setattr(server.applescript, "close_word_document", fake_close_word)
+
+    assert (await server.excel_live_close("Model.xlsx", save_changes=False))["save_changes"] == "no"
+    assert (await server.excel_live_close("Model.xlsx", save_changes=True))["save_changes"] == "yes"
+    assert (await server.word_live_close("Memo.docx", save_changes=False))["save_changes"] == "no"
+    assert seen == [("excel", "Model.xlsx", "no"), ("excel", "Model.xlsx", "yes"), ("word", "Memo.docx", "no")]
+
+    # 3. batch_read_live_excel_ranges surfaces #VALUE! / #DIV/0! from string value when value is blank
+    bridge = AppleScriptBridge()
+    us, rs, gs, fs = "\x1f", "\x1e", "\x1d", "\x1c"
+    fake_raw = (
+        f"Model.xlsx{fs}"
+        f"Sheet1{us}A1:B2{gs}"
+        f"10{us}{rs}{us}20{gs}"
+        f"{gs}"
+        f"10{us}#VALUE!{rs}#DIV/0!{us}20"
+    )
+
+    async def fake_exec(script, args=None, timeout=None):
+        assert "string value of rng" in script
+        assert "calculate" in script
+        return fake_raw
+
+    monkeypatch.setattr(bridge, "execute_applescript", fake_exec)
+    out = await bridge.batch_read_live_excel_ranges(
+        ranges=[{"sheet_name": "Sheet1", "range_ref": "A1:B2"}],
+        workbook_name="Model.xlsx",
+    )
+    assert out["status"] == "success"
+    assert out["results"][0]["values"] == [["10", "#VALUE!"], ["#DIV/0!", "20"]]
+
+
+@pytest.mark.asyncio
+async def test_live_read_warns_when_in_memory_workbook_has_unsaved_edits(tmp_path: Path, monkeypatch):
+    """Verify excel_live_batch_read_ranges warns ONLY when a matching in-memory workbook has unsaved dirty edits."""
+    for existing_id in list(server.excel.active_workbooks.keys()):
+        await server.close_workbook(existing_id)
+
+    target = tmp_path / "DirtySync.xlsx"
+    created = await server.create_workbook(title="DirtySync", sheet_names=["S1"])
+    wb_id = created["workbook_id"]
+    try:
+        await server.batch_write_ranges(
+            workbook_id=wb_id,
+            operations=[{"sheet_name": "S1", "start_cell": "A1", "data": [["Val", 1]]}],
+        )
+        await server.save_workbook(workbook_id=wb_id, file_path=str(target))
+
+        async def fake_batch_read(ranges, workbook_name=None, include_formulas=False):
+            return {"status": "success", "workbook_name": "DirtySync.xlsx", "ranges_read": 1, "results": []}
+
+        monkeypatch.setattr(server.applescript, "batch_read_live_excel_ranges", fake_batch_read)
+
+        # Clean (just saved) -> NO warning
+        clean_res = await server.excel_live_batch_read_ranges(
+            ranges=[{"sheet_name": "S1", "range_ref": "A1:B1"}], workbook_name="DirtySync.xlsx"
+        )
+        assert "warning" not in clean_res
+
+        # Mutate in-memory without calling save_workbook -> warning MUST appear
+        await server.write_cell(workbook_id=wb_id, sheet_name="S1", cell="B1", value=99)
+        dirty_res = await server.excel_live_batch_read_ranges(
+            ranges=[{"sheet_name": "S1", "range_ref": "A1:B1"}], workbook_name="DirtySync.xlsx"
+        )
+        assert "warning" in dirty_res
+        assert "save_workbook" in dirty_res["warning"]
+    finally:
+        await server.close_workbook(wb_id)
+
+
+@pytest.mark.asyncio
+async def test_opt_in_debug_log_writes_jsonl(tmp_path: Path, monkeypatch):
+    """Verify M365_MCP_DEBUG_LOG writes structured JSONL entries when set and is a no-op when unset."""
+    log_file = tmp_path / "mcp_debug_private.jsonl"
+    monkeypatch.setenv("M365_MCP_DEBUG_LOG", str(log_file))
+
+    wrapped = server._wrap_compact_json(server.check_office_status)
+    out = await wrapped()
+    assert isinstance(out, str)
+    assert log_file.exists()
+    lines = [json.loads(line) for line in log_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(lines) == 1
+    assert lines[0]["tool"] == "check_office_status"
+    assert lines[0]["ms"] >= 0
+    assert "response_preview" in lines[0]
+
+
+@pytest.mark.asyncio
+async def test_batch_write_ranges_fill_formula_1d_and_2d_with_formula_guard():
+    """Verify batch_write_ranges `fill_formula` translates relative refs across 1D rows, 1D cols, and 2D grids and obeys Formula Guard."""
+    created = await server.create_workbook(title="FillFormulaTest", sheet_names=["Cash Flows", "Sens"])
+    wb_id = created["workbook_id"]
+    try:
+        res = await server.batch_write_ranges(
+            workbook_id=wb_id,
+            operations=[
+                {"sheet_name": "Cash Flows", "range": "A1:D3", "data": [
+                    ["Item", "Y1", "Y2", "Y3"],
+                    ["Rev", 10, 12, 15],
+                    ["Margin", 0.4, 0.4, 0.4],
+                ]},
+                {"sheet_name": "Cash Flows", "range": "A4", "data": [["EBITDA"]]},
+                {"sheet_name": "Cash Flows", "range": "B4:D4", "fill_formula": "=B2*B3"},
+                {"sheet_name": "Sens", "range": "A1:D3", "data": [
+                    ["WACC/CapEx", 20, 25, 30],
+                    [0.09, None, None, None],
+                    [0.10, None, None, None],
+                ]},
+                {
+                    "sheet_name": "Sens",
+                    "range": "B2:D3",
+                    "fill_formula": "=NPV($A2,'Cash Flows'!$B$4:$D$4)-B$1",
+                },
+            ],
+        )
+        assert res["status"] == "success"
+
+        cf = await server.read_range(wb_id, "Cash Flows", "B4:D4", include_formulas=True)
+        assert cf["data"][0] == ["=B2*B3", "=C2*C3", "=D2*D3"]
+
+        sens = await server.read_range(wb_id, "Sens", "B2:D3", include_formulas=True)
+        assert sens["data"] == [
+            [
+                "=NPV($A2,'Cash Flows'!$B$4:$D$4)-B$1",
+                "=NPV($A2,'Cash Flows'!$B$4:$D$4)-C$1",
+                "=NPV($A2,'Cash Flows'!$B$4:$D$4)-D$1",
+            ],
+            [
+                "=NPV($A3,'Cash Flows'!$B$4:$D$4)-B$1",
+                "=NPV($A3,'Cash Flows'!$B$4:$D$4)-C$1",
+                "=NPV($A3,'Cash Flows'!$B$4:$D$4)-D$1",
+            ],
+        ]
+
+        # Formula Guard still protects fill_formula cells from literal overwrite
+        blk = await server.batch_write_ranges(
+            workbook_id=wb_id,
+            operations=[{"sheet_name": "Cash Flows", "range": "B4:D4", "data": [[4, 5, 6]]}],
+        )
+        assert blk["status"] == "confirmation_required"
+        assert blk["blocked_count"] == 3
+    finally:
+        await server.close_workbook(wb_id)

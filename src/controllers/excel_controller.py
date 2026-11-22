@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.chart import BarChart, LineChart, PieChart, Reference
+from openpyxl.formula.translate import Translator
 from openpyxl.styles import Alignment, Border, Font, NamedStyle, PatternFill, Side
 from openpyxl.utils import column_index_from_string, get_column_letter, range_boundaries
 from openpyxl.utils.cell import coordinate_from_string
@@ -167,10 +168,22 @@ class ExcelController:
                 f"Evicted oldest in-memory workbook {oldest_id} to stay within limit ({self.max_workbooks})"
             )
 
-    def _get_entry(self, workbook_id: str) -> Dict[str, Any]:
-        if workbook_id not in self.active_workbooks:
-            raise ValueError(f"Workbook '{workbook_id}' not found. Open or create a workbook first.")
-        return self.active_workbooks[workbook_id]
+    def _resolve_workbook_id(self, workbook_id: Optional[str]) -> str:
+        if workbook_id:
+            if workbook_id not in self.active_workbooks:
+                raise ValueError(f"Workbook '{workbook_id}' not found. Open or create a workbook first.")
+            return workbook_id
+        if len(self.active_workbooks) == 1:
+            return next(iter(self.active_workbooks))
+        if not self.active_workbooks:
+            raise ValueError("No active workbooks in memory. Open or create a workbook first.")
+        raise ValueError(
+            f"workbook_id is required when multiple workbooks are active: {list(self.active_workbooks.keys())}"
+        )
+
+    def _get_entry(self, workbook_id: Optional[str]) -> Dict[str, Any]:
+        resolved_id = self._resolve_workbook_id(workbook_id)
+        return self.active_workbooks[resolved_id]
 
     def _get_sheet(self, entry: Dict[str, Any], sheet_name: Optional[str]):
         wb = entry["workbook_object"]
@@ -369,10 +382,11 @@ class ExcelController:
 
     async def close_workbook(
         self,
-        workbook_id: str,
+        workbook_id: Optional[str] = None,
         save_before_close: bool = False,
     ) -> Dict[str, Any]:
         """Close an in-memory workbook, release resources, and remove temp files."""
+        workbook_id = self._resolve_workbook_id(workbook_id)
         entry = self._get_entry(workbook_id)
         saved_path = None
         if save_before_close and not entry["metadata"].get("is_temporary", True):
@@ -1260,16 +1274,144 @@ class ExcelController:
             result["formula_warnings"] = formula_warnings
         return sanitize_for_json(result)
 
+    @staticmethod
+    def _extract_batch_sheet_name(op: Dict[str, Any]) -> Optional[str]:
+        """Resolve sheet_name from LLM-friendly aliases (sheet_name, sheet, worksheet, worksheet_name, tab)."""
+        return (
+            op.get("sheet_name")
+            or op.get("sheet")
+            or op.get("worksheet")
+            or op.get("worksheet_name")
+            or op.get("tab")
+        )
+
+    @staticmethod
+    def _extract_batch_start_cell(op: Dict[str, Any]) -> str:
+        """Resolve start_cell from LLM-friendly aliases (start_cell, range, cell_range, cell)."""
+        raw = (
+            op.get("start_cell")
+            or op.get("range")
+            or op.get("cell_range")
+            or op.get("cell")
+            or "A1"
+        )
+        text = str(raw).strip()
+        if "!" in text:
+            text = text.rsplit("!", 1)[1].strip()
+        if ":" in text:
+            text = text.split(":", 1)[0].strip()
+        return text or "A1"
+
+    @staticmethod
+    def _normalize_batch_data(op: Dict[str, Any], raw_data: Any) -> List[List[Any]]:
+        """Normalize flat 1D lists and auto-orient 1xN / Nx1 matrices to match an explicit range shape."""
+        if not isinstance(raw_data, list) or not raw_data:
+            raise ValueError(f"Each operation must include non-empty 'data' (sheet={op.get('sheet_name') or op.get('sheet')})")
+
+        # Determine if caller passed an explicit A1:B2 range to infer intended 1xN vs Nx1 orientation
+        raw_ref = str(
+            op.get("range")
+            or op.get("cell_range")
+            or op.get("start_cell")
+            or op.get("cell")
+            or ""
+        ).strip()
+        if "!" in raw_ref:
+            raw_ref = raw_ref.rsplit("!", 1)[1].strip()
+
+        target_is_horizontal = False
+        target_is_vertical = False
+        if ":" in raw_ref:
+            try:
+                left_ref, right_ref = [p.strip() for p in raw_ref.split(":", 1)]
+                c1_let, r1 = coordinate_from_string(validate_cell_ref(left_ref))
+                c2_let, r2 = coordinate_from_string(validate_cell_ref(right_ref))
+                c1, c2 = column_index_from_string(c1_let), column_index_from_string(c2_let)
+                if r1 == r2 and c2 > c1:
+                    target_is_horizontal = True
+                elif c1 == c2 and r2 > r1:
+                    target_is_vertical = True
+            except Exception:
+                pass
+
+        # Flat 1D list of scalars -> wrap as horizontal row (or vertical column if target range is vertical)
+        if not isinstance(raw_data[0], list):
+            if target_is_vertical:
+                return [[v] for v in raw_data]
+            return [list(raw_data)]
+
+        rows: List[List[Any]] = [list(r) if isinstance(r, list) else [r] for r in raw_data]
+
+        # Auto-transpose Nx1 vertical data written into an explicit 1xN horizontal range (e.g., B3:F3)
+        if target_is_horizontal and len(rows) > 1 and all(len(r) == 1 for r in rows):
+            return [[r[0] for r in rows]]
+
+        # Auto-transpose 1xN horizontal data written into an explicit Nx1 vertical range (e.g., A4:A10)
+        if target_is_vertical and len(rows) == 1 and len(rows[0]) > 1:
+            return [[v] for v in rows[0]]
+
+        return rows
+
+    @classmethod
+    def _resolve_batch_op_data(cls, op: Dict[str, Any]) -> List[List[Any]]:
+        """Resolve a batch_write_ranges operation into a 2D matrix, expanding Excel-style `fill_formula` across ranges."""
+        raw_data = op.get("data") if op.get("data") is not None else op.get("values")
+        fill_fml = op.get("fill_formula")
+        if fill_fml is None and raw_data is None and op.get("formula"):
+            fill_fml = op.get("formula")
+
+        if fill_fml is not None:
+            fml_str = str(fill_fml).strip()
+            if not fml_str.startswith("="):
+                fml_str = "=" + fml_str
+            raw_ref = str(
+                op.get("range")
+                or op.get("cell_range")
+                or op.get("start_cell")
+                or op.get("cell")
+                or ""
+            ).strip()
+            if "!" in raw_ref:
+                raw_ref = raw_ref.rsplit("!", 1)[1].strip()
+            if not raw_ref:
+                raise ValueError("fill_formula requires 'range' (e.g. 'C4:H4' or 'C3:G9')")
+
+            if ":" in raw_ref:
+                left_ref, right_ref = [p.strip() for p in raw_ref.split(":", 1)]
+                c1_let, r1 = coordinate_from_string(validate_cell_ref(left_ref))
+                c2_let, r2 = coordinate_from_string(validate_cell_ref(right_ref))
+                c1, c2 = column_index_from_string(c1_let), column_index_from_string(c2_let)
+                if r2 < r1 or c2 < c1:
+                    raise ValueError(f"Invalid fill_formula range '{raw_ref}': end cell precedes start cell")
+            else:
+                c1_let, r1 = coordinate_from_string(validate_cell_ref(raw_ref))
+                c1 = c2 = column_index_from_string(c1_let)
+                r2 = r1
+
+            origin = f"{get_column_letter(c1)}{r1}"
+            translator = Translator(fml_str, origin=origin)
+            matrix: List[List[Any]] = []
+            for r in range(r1, r2 + 1):
+                row_vals: List[Any] = []
+                for c in range(c1, c2 + 1):
+                    target = f"{get_column_letter(c)}{r}"
+                    row_vals.append(fml_str if target == origin else translator.translate_formula(target))
+                matrix.append(row_vals)
+            return matrix
+
+        return cls._normalize_batch_data(op, raw_data)
+
     async def batch_write_ranges(
         self,
-        workbook_id: str,
-        operations: List[Dict[str, Any]],
+        workbook_id: Optional[str] = None,
+        operations: Optional[List[Dict[str, Any]]] = None,
         allow_formula_overwrite: bool = False,
     ) -> Dict[str, Any]:
         """Write multiple 2D ranges across one or more worksheets in a single call and save once."""
         if not operations:
             raise ValueError("operations must be a non-empty list of write specifications")
 
+        workbook_id = self._resolve_workbook_id(workbook_id)
         entry = self._get_entry(workbook_id)
         wb = entry["workbook_object"]
 
@@ -1278,11 +1420,9 @@ class ExcelController:
         if not allow_formula_overwrite and guard_mode != "off":
             blocked: List[Dict[str, Any]] = []
             for op in operations:
-                sheet_name = op.get("sheet_name")
-                start_cell = op.get("start_cell", "A1")
-                data = op.get("data")
-                if not data:
-                    raise ValueError(f"Each operation must include non-empty 'data' (sheet={sheet_name})")
+                sheet_name = self._extract_batch_sheet_name(op)
+                start_cell = self._extract_batch_start_cell(op)
+                data = self._resolve_batch_op_data(op)
                 ws = self._get_sheet(entry, sheet_name)
                 clean_start = validate_cell_ref(start_cell)
                 col_letter, start_row = coordinate_from_string(clean_start)
@@ -1308,11 +1448,9 @@ class ExcelController:
         formulas_updated = 0
 
         for op in operations:
-            sheet_name = op.get("sheet_name")
-            start_cell = op.get("start_cell", "A1")
-            data = op.get("data")
-            if not data:
-                raise ValueError(f"Each operation must include non-empty 'data' (sheet={sheet_name})")
+            sheet_name = self._extract_batch_sheet_name(op)
+            start_cell = self._extract_batch_start_cell(op)
+            data = self._resolve_batch_op_data(op)
             formatting = op.get("formatting")
             header_formatting = op.get("header_formatting")
             number_format = op.get("number_format")
@@ -1621,12 +1759,13 @@ class ExcelController:
 
     async def save_workbook(
         self,
-        workbook_id: str,
+        workbook_id: Optional[str] = None,
         file_path: Optional[str] = None,
         format: str = "xlsx",
         sheet_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Save workbook in-place or to a new path (.xlsx, .xlsm, .csv, .pdf)."""
+        workbook_id = self._resolve_workbook_id(workbook_id)
         entry = self._get_entry(workbook_id)
         wb = entry["workbook_object"]
         fmt = format.lower().lstrip(".")
@@ -1969,8 +2108,8 @@ class ExcelController:
 
     async def batch_format_workbook(
         self,
-        workbook_id: str,
-        operations: List[Dict[str, Any]],
+        workbook_id: Optional[str] = None,
+        operations: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Batch-format multiple worksheets in a single call and save once.
 
@@ -1981,13 +2120,15 @@ class ExcelController:
         if not operations:
             raise ValueError("operations must be a non-empty list of worksheet format specs")
 
+        workbook_id = self._resolve_workbook_id(workbook_id)
         entry = self._get_entry(workbook_id)
         sheet_summaries: List[Dict[str, Any]] = []
         op_warnings: List[str] = []
         total_cells = 0
 
         known_op_keys = {
-            "sheet_name", "column_widths", "row_heights", "freeze_panes",
+            "sheet_name", "sheet", "worksheet", "worksheet_name", "tab",
+            "column_widths", "row_heights", "freeze_panes",
             "auto_fit_columns", "min_col_width", "max_col_width", "col_padding",
             "auto_color_financial_model", "merge_ranges", "show_gridlines",
             "styles", "rules", "cell_styles", "formats", "range_styles",
@@ -1999,7 +2140,7 @@ class ExcelController:
         )
 
         for op in operations:
-            ws = self._get_sheet(entry, op.get("sheet_name"))
+            ws = self._get_sheet(entry, self._extract_batch_sheet_name(op))
             styled_ranges = 0
             cells_formatted = 0
 

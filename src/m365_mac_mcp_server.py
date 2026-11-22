@@ -13,8 +13,10 @@ import inspect
 import json
 import os
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 # Ensure src/ is always importable regardless of launch working directory
 SRC_DIR = str(Path(__file__).resolve().parent)
@@ -162,11 +164,59 @@ def _compact_json_schema(node: Any, is_properties_map: bool = False) -> None:
             _compact_json_schema(item, is_properties_map=False)
 
 
+def _append_debug_log(tool_name: str, args: tuple, kwargs: Dict[str, Any], result: Any, elapsed_ms: float) -> None:
+    """Opt-in JSONL wire logger (active only when M365_MCP_DEBUG_LOG is set)."""
+    log_path_raw = os.environ.get("M365_MCP_DEBUG_LOG", "").strip()
+    if not log_path_raw:
+        return
+    try:
+        log_path = Path(os.path.expanduser(log_path_raw))
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        arg_summary: Dict[str, Any] = {}
+        if args:
+            arg_summary["_args"] = sanitize_for_json(list(args))
+        if kwargs:
+            arg_summary.update(sanitize_for_json(kwargs))
+        args_str = json.dumps(arg_summary, separators=(",", ":"), ensure_ascii=False, default=str)
+        if len(args_str) > 1500:
+            args_str = args_str[:1500] + "...<truncated>"
+
+        record: Dict[str, Any] = {
+            "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            "tool": tool_name,
+            "ms": round(elapsed_ms, 1),
+            "args": args_str,
+        }
+        if isinstance(result, dict):
+            if "status" in result:
+                record["status"] = result["status"]
+            if "error" in result:
+                record["error"] = str(result["error"])[:500]
+            if "warning" in result:
+                record["warning"] = str(result["warning"])[:500]
+            if "warnings" in result:
+                record["warnings"] = result["warnings"]
+            if "blocked_count" in result:
+                record["blocked_count"] = result["blocked_count"]
+        res_str = (
+            result
+            if isinstance(result, str)
+            else json.dumps(sanitize_for_json(result), separators=(",", ":"), ensure_ascii=False, default=str)
+        )
+        record["response_preview"] = res_str[:1200] + ("...<truncated>" if len(res_str) > 1200 else "")
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, separators=(",", ":"), ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 def _wrap_compact_json(fn):
     """Wrap an async tool function so MCP returns compact JSON (no indent=2 whitespace)."""
     @functools.wraps(fn)
     async def wrapped(*args, **kwargs):
+        t0 = time.perf_counter()
         res = await fn(*args, **kwargs)
+        _append_debug_log(fn.__name__, args, kwargs, res, (time.perf_counter() - t0) * 1000.0)
         if isinstance(res, str):
             return res
         return json.dumps(
@@ -581,6 +631,30 @@ async def word_live_list_documents() -> Dict[str, Any]:
         return _error_response("word_live_list_documents", exc)
 
 
+def _reject_internal_temp_live_open(file_path: str, app_name: str, save_tool: str) -> None:
+    """Block live Office open on internal /tmp or macOS /var/folders temp UUID files that trigger Grant Access dialogs."""
+    try:
+        target = Path(os.path.expanduser(file_path)).resolve()
+        temp_roots = [
+            excel.temp_dir.resolve(),
+            word.temp_dir.resolve(),
+            Path(config.get("temp_dir", "/tmp/m365-mac-mcp")).resolve(),
+            Path("/tmp/m365-mac-mcp").resolve(),
+            Path("/tmp/office365_mcp").resolve(),
+        ]
+        for root in temp_roots:
+            if target == root or root in target.parents:
+                raise ValueError(
+                    f"Cannot open internal temporary file '{file_path}' in live {app_name} "
+                    f"(macOS sandbox triggers a Grant Access dialog). Call {save_tool}(file_path=...) "
+                    f"to save to a normal folder first, then open the saved file."
+                )
+    except ValueError:
+        raise
+    except Exception:
+        pass
+
+
 @_tool(app="word")
 async def word_live_open(
     file_path: str,
@@ -589,6 +663,7 @@ async def word_live_open(
 ) -> Dict[str, Any]:
     """Open a Word file directly in the live Microsoft Word application."""
     try:
+        _reject_internal_temp_live_open(file_path, "Microsoft Word", "save_document")
         return await applescript.open_word_file(
             file_path=file_path, read_only=read_only, activate=activate
         )
@@ -677,15 +752,23 @@ async def word_live_save(
         return _error_response("word_live_save", exc)
 
 
+def _normalize_save_changes(save_changes: Union[bool, str]) -> str:
+    """Accept bool (True/False) or str ('yes'/'no'/'ask') for live close tools."""
+    if isinstance(save_changes, bool):
+        return "yes" if save_changes else "no"
+    return str(save_changes or "no").strip().lower()
+
+
 @_tool(app="word")
 async def word_live_close(
     document_name: Optional[str] = None,
-    save_changes: str = "no",
+    save_changes: Union[bool, str] = "no",
 ) -> Dict[str, Any]:
     """Close a live Word document cleanly without triggering unsaved-changes dialogs."""
     try:
         return await applescript.close_word_document(
-            document_name=document_name, save_changes=save_changes
+            document_name=document_name,
+            save_changes=_normalize_save_changes(save_changes),
         )
     except Exception as exc:
         return _error_response("word_live_close", exc)
@@ -728,25 +811,28 @@ async def open_workbook(file_path: str) -> Dict[str, Any]:
 
 
 @_tool(app="excel")
-async def list_worksheets(workbook_id: str) -> Dict[str, Any]:
-    """List all worksheet names in an open workbook."""
+async def list_worksheets(workbook_id: Optional[str] = None) -> Dict[str, Any]:
+    """List all worksheet names in an open workbook. workbook_id auto-resolves if 1 workbook is active."""
     try:
-        sheets = await excel.list_worksheets(workbook_id=workbook_id)
-        return {"status": "success", "workbook_id": workbook_id, "worksheets": sheets}
+        resolved_id = excel._resolve_workbook_id(workbook_id)
+        sheets = await excel.list_worksheets(workbook_id=resolved_id)
+        return {"status": "success", "workbook_id": resolved_id, "worksheets": sheets}
     except Exception as exc:
         return _error_response("list_worksheets", exc)
 
 
 @_tool(app="excel")
 async def add_worksheet(
-    workbook_id: str,
-    sheet_name: str,
+    workbook_id: Optional[str] = None,
+    sheet_name: str = "",
     position: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Add a new worksheet to an open workbook."""
+    """Add a new worksheet to an open workbook. workbook_id auto-resolves if 1 workbook is active."""
     try:
         return await excel.add_worksheet(
-            workbook_id=workbook_id, sheet_name=sheet_name, position=position
+            workbook_id=excel._resolve_workbook_id(workbook_id),
+            sheet_name=sheet_name,
+            position=position,
         )
     except Exception as exc:
         return _error_response("add_worksheet", exc)
@@ -768,11 +854,15 @@ async def rename_worksheet(
 
 
 @_tool(app="excel")
-async def delete_worksheet(workbook_id: str, sheet_name: str) -> Dict[str, Any]:
-    """Delete a worksheet from an open workbook."""
+async def delete_worksheet(
+    workbook_id: Optional[str] = None,
+    sheet_name: str = "",
+) -> Dict[str, Any]:
+    """Delete a worksheet from an open workbook. workbook_id auto-resolves if 1 workbook is active."""
     try:
         return await excel.delete_worksheet(
-            workbook_id=workbook_id, sheet_name=sheet_name
+            workbook_id=excel._resolve_workbook_id(workbook_id),
+            sheet_name=sheet_name,
         )
     except Exception as exc:
         return _error_response("delete_worksheet", exc)
@@ -810,21 +900,26 @@ async def read_cell(
 
 @_tool(app="excel")
 async def read_range(
-    workbook_id: str,
+    workbook_id: Optional[str] = None,
     sheet_name: Optional[str] = None,
     cell_range: Optional[str] = None,
     range_ref: Optional[str] = None,
+    range: Optional[str] = None,
     evaluate_formulas: bool = False,
     include_formulas: Optional[bool] = None,
     max_rows: int = 500,
     max_cols: int = 50,
 ) -> Dict[str, Any]:
-    """Read a cell range (or entire used range) as a JSON-safe 2D matrix. Accepts cell_range or range_ref."""
+    """Read a cell range (or entire used range) as a JSON-safe 2D matrix. Accepts cell_range, range_ref, or range; workbook_id auto-resolves if 1 workbook is active."""
     try:
-        effective_range = cell_range if cell_range is not None else range_ref
+        effective_range = (
+            cell_range
+            if cell_range is not None
+            else (range_ref if range_ref is not None else range)
+        )
         effective_eval = (not include_formulas) if include_formulas is not None else evaluate_formulas
         return await excel.read_range(
-            workbook_id=workbook_id,
+            workbook_id=excel._resolve_workbook_id(workbook_id),
             sheet_name=sheet_name,
             cell_range=effective_range,
             evaluate_formulas=effective_eval,
@@ -891,15 +986,15 @@ async def audit_workbook_formulas(
 
 @_tool(app="excel")
 async def write_cell(
-    workbook_id: str,
-    sheet_name: Optional[str],
-    cell: str,
-    value: Any,
+    workbook_id: Optional[str] = None,
+    sheet_name: Optional[str] = None,
+    cell: str = "",
+    value: Any = None,
     formatting: Optional[Dict[str, Any]] = None,
     number_format: Optional[str] = None,
     allow_formula_overwrite: bool = False,
 ) -> Dict[str, Any]:
-    """Write a properly typed value (bool, int, float, str, None) to a cell."""
+    """Write a properly typed value (bool, int, float, str, None) to a cell. workbook_id auto-resolves if 1 workbook is active."""
     try:
         return await excel.write_cell(
             workbook_id=workbook_id,
@@ -1058,11 +1153,11 @@ async def format_worksheet(
 
 @_tool(app="excel")
 async def batch_write_ranges(
-    workbook_id: str,
-    operations: List[Dict[str, Any]],
+    workbook_id: Optional[str] = None,
+    operations: Optional[List[Dict[str, Any]]] = None,
     allow_formula_overwrite: bool = False,
 ) -> Dict[str, Any]:
-    """Write multiple 2D ranges across sheets in one call. operations=[{'sheet_name':'...','start_cell':'A1','data':[[...]],'number_format':'...','formatting':{...}}]."""
+    """Write multiple 2D ranges or drag-fill formulas across sheets in one call. workbook_id auto-resolves if 1 workbook is active; data is row-major 2D [[r1c1,r1c2],[r2c1,r2c2]]. Supports Excel-style drag/fill via {'sheet_name':'...','range':'C4:H4','fill_formula':'=C2*C3'} (auto-translates relative refs across 1D/2D ranges)."""
     try:
         return await excel.batch_write_ranges(
             workbook_id=workbook_id,
@@ -1075,10 +1170,10 @@ async def batch_write_ranges(
 
 @_tool(app="excel")
 async def batch_format_workbook(
-    workbook_id: str,
-    operations: List[Dict[str, Any]],
+    workbook_id: Optional[str] = None,
+    operations: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """Batch-format multiple worksheets in one call. Supports comma-separated ranges ('B2:F3, B6:F7') and 'auto_color_financial_model': True (blue inputs, black formulas, green cross-sheet links). operations=[{'sheet_name':'...','column_widths':{'A':40,'B:G':15},'freeze_panes':'B2','auto_color_financial_model':True,'styles':[{'range':'A1:G1','number_format':'$#,##0','formatting':{'bold':True,'font_color':'#FFFFFF','bg_color':'#1F4E79','border':{'top':'thin','bottom':'double'}}}]}] (flat keys also accepted)."""
+    """Batch-format multiple worksheets in one call. workbook_id auto-resolves if 1 workbook is active. Supports comma-separated ranges ('B2:F3, B6:F7') and 'auto_color_financial_model': True (blue inputs, black formulas, green cross-sheet links). operations=[{'sheet_name':'...','column_widths':{'A':40,'B:G':15},'freeze_panes':'B2','auto_color_financial_model':True,'styles':[{'range':'A1:G1','number_format':'$#,##0','formatting':{'bold':True,'font_color':'#FFFFFF','bg_color':'#1F4E79','border':{'top':'thin','bottom':'double'}}}]}] (flat keys also accepted)."""
     try:
         return await excel.batch_format_workbook(
             workbook_id=workbook_id, operations=operations
@@ -1124,10 +1219,10 @@ async def apply_cell_style(
 
 @_tool(app="excel")
 async def add_data_validation(
-    workbook_id: str,
-    sheet_name: Optional[str],
-    cell_range: str,
-    validation_type: str,
+    workbook_id: Optional[str] = None,
+    sheet_name: Optional[str] = None,
+    cell_range: str = "",
+    validation_type: str = "",
     formula1: Any = None,
     formula2: Any = None,
     operator: Optional[str] = None,
@@ -1139,10 +1234,10 @@ async def add_data_validation(
     error_style: str = "stop",
     show_dropdown: bool = True,
 ) -> Dict[str, Any]:
-    """Add an Excel data validation rule (list, whole, decimal, date, time, textLength, custom)."""
+    """Add an Excel data validation rule (list, whole, decimal, date, time, textLength, custom). workbook_id auto-resolves if 1 workbook is active."""
     try:
         return await excel.add_data_validation(
-            workbook_id=workbook_id,
+            workbook_id=excel._resolve_workbook_id(workbook_id),
             sheet_name=sheet_name,
             cell_range=cell_range,
             validation_type=validation_type,
@@ -1192,20 +1287,20 @@ async def clear_data_validations(
 
 @_tool(app="excel")
 async def add_excel_table(
-    workbook_id: str,
-    sheet_name: Optional[str],
-    table_name: str,
-    data_range: str,
+    workbook_id: Optional[str] = None,
+    sheet_name: Optional[str] = None,
+    table_name: str = "",
+    data_range: str = "",
     style_name: str = "TableStyleMedium9",
     show_first_column: bool = False,
     show_last_column: bool = False,
     show_row_stripes: bool = True,
     show_column_stripes: bool = False,
 ) -> Dict[str, Any]:
-    """Create a structured Excel Table (TableStyleLight*/Medium*/Dark*) with banded row/column toggles."""
+    """Create a structured Excel Table (TableStyleLight*/Medium*/Dark*) with banded row/column toggles. workbook_id auto-resolves if 1 workbook is active."""
     try:
         return await excel.add_table(
-            workbook_id=workbook_id,
+            workbook_id=excel._resolve_workbook_id(workbook_id),
             sheet_name=sheet_name,
             table_name=table_name,
             data_range=data_range,
@@ -1248,17 +1343,17 @@ async def update_excel_table_style(
 
 @_tool(app="excel")
 async def create_chart(
-    workbook_id: str,
-    sheet_name: Optional[str],
-    chart_type: str,
-    data_range: str,
+    workbook_id: Optional[str] = None,
+    sheet_name: Optional[str] = None,
+    chart_type: str = "",
+    data_range: str = "",
     chart_title: str = "",
     position: str = "E5",
 ) -> Dict[str, Any]:
-    """Create a bar, line, or pie chart from a worksheet data range."""
+    """Create a bar, line, or pie chart from a worksheet data range. workbook_id auto-resolves if 1 workbook is active."""
     try:
         return await excel.create_chart(
-            workbook_id=workbook_id,
+            workbook_id=excel._resolve_workbook_id(workbook_id),
             sheet_name=sheet_name,
             chart_type=chart_type,
             data_range=data_range,
@@ -1271,12 +1366,12 @@ async def create_chart(
 
 @_tool(app="excel")
 async def save_workbook(
-    workbook_id: str,
+    workbook_id: Optional[str] = None,
     file_path: Optional[str] = None,
     format: str = "xlsx",
     sheet_name: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Save a workbook in-place or to a new path (.xlsx, .xlsm, .csv, .pdf)."""
+    """Save a workbook in-place or to a new path (.xlsx, .xlsm, .csv, .pdf). workbook_id auto-resolves if 1 workbook is active."""
     try:
         return await excel.save_workbook(
             workbook_id=workbook_id,
@@ -1290,10 +1385,10 @@ async def save_workbook(
 
 @_tool(app="excel")
 async def close_workbook(
-    workbook_id: str,
+    workbook_id: Optional[str] = None,
     save_before_close: bool = False,
 ) -> Dict[str, Any]:
-    """Close an in-memory workbook, release memory, and clean up temporary files."""
+    """Close an in-memory workbook, release memory, and clean up temporary files. workbook_id auto-resolves if 1 workbook is active."""
     try:
         return await excel.close_workbook(
             workbook_id=workbook_id, save_before_close=save_before_close
@@ -1324,6 +1419,7 @@ async def excel_live_open(
 ) -> Dict[str, Any]:
     """Open an .xlsx, .xlsm, or .csv file directly in live Microsoft Excel."""
     try:
+        _reject_internal_temp_live_open(file_path, "Microsoft Excel", "save_workbook")
         return await applescript.open_excel_file(
             file_path=file_path, read_only=read_only, activate=activate
         )
@@ -1394,6 +1490,31 @@ async def excel_live_activate_worksheet(
         return _error_response("excel_live_activate_worksheet", exc)
 
 
+def _attach_dirty_in_memory_warning(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Warn if an in-memory workbook matching the live Excel workbook has unsaved file-level edits."""
+    if not isinstance(result, dict) or result.get("status") != "success":
+        return result
+    live_name = str(result.get("workbook_name") or "").strip().lower()
+    if not live_name:
+        return result
+    for wb_id, entry in excel.active_workbooks.items():
+        if not entry.get("dirty"):
+            continue
+        meta = entry.get("metadata") or {}
+        candidates = {
+            Path(str(entry.get("working_path") or "")).name.lower(),
+            Path(str(meta.get("file_path") or "")).name.lower(),
+            Path(str(meta.get("original_path") or "")).name.lower(),
+        }
+        if live_name in candidates:
+            result["warning"] = (
+                f"In-memory workbook '{wb_id}' has unsaved file-level edits not yet visible in live Excel. "
+                "Call save_workbook() first so live Excel reloads them, or use excel_live_batch_write_cells for direct live edits."
+            )
+            break
+    return result
+
+
 @_tool(app="excel", compact=False)
 async def excel_live_read_range(
     range_ref: Optional[str] = None,
@@ -1407,12 +1528,13 @@ async def excel_live_read_range(
         effective_ref = range_ref if range_ref is not None else cell_range
         if not effective_ref:
             raise ValueError("Provide range_ref or cell_range (e.g. 'B2:F15')")
-        return await applescript.read_live_excel_range(
+        res = await applescript.read_live_excel_range(
             range_ref=effective_ref,
             sheet_name=sheet_name,
             workbook_name=workbook_name,
             include_formulas=include_formulas,
         )
+        return _attach_dirty_in_memory_warning(res)
     except Exception as exc:
         return _error_response("excel_live_read_range", exc)
 
@@ -1504,11 +1626,12 @@ async def excel_live_batch_read_ranges(
     Pass `ranges` as [{'sheet_name': 'Income Statement', 'range_ref': 'B2:F16'}, {'sheet_name': 'Balance Sheet', 'range_ref': 'F23:F27'}].
     """
     try:
-        return await applescript.batch_read_live_excel_ranges(
+        res = await applescript.batch_read_live_excel_ranges(
             ranges=ranges,
             workbook_name=workbook_name,
             include_formulas=include_formulas,
         )
+        return _attach_dirty_in_memory_warning(res)
     except Exception as exc:
         return _error_response("excel_live_batch_read_ranges", exc)
 
@@ -1533,12 +1656,13 @@ async def excel_live_save(
 @_tool(app="excel")
 async def excel_live_close(
     workbook_name: Optional[str] = None,
-    save_changes: str = "no",
+    save_changes: Union[bool, str] = "no",
 ) -> Dict[str, Any]:
     """Close a live Excel workbook cleanly without triggering unsaved-changes dialogs."""
     try:
         return await applescript.close_excel_workbook(
-            workbook_name=workbook_name, save_changes=save_changes
+            workbook_name=workbook_name,
+            save_changes=_normalize_save_changes(save_changes),
         )
     except Exception as exc:
         return _error_response("excel_live_close", exc)
@@ -1744,7 +1868,7 @@ async def check_office_status() -> Dict[str, Any]:
         versions = await applescript.get_office_version_info()
         return sanitize_for_json({
             "status": "running",
-            "server_version": "2.2.0",
+            "server_version": "2.3.0",
             "word_available": versions["word"]["installed"],
             "excel_available": versions["excel"]["installed"],
             "powerpoint_available": versions["powerpoint"]["installed"],

@@ -2,7 +2,7 @@
 
 *Dual-mode (file-level + live AppleScript) MCP server for Microsoft Excel, Word, and PowerPoint — verified on **macOS 27.x** & **Microsoft Office 16.x** (`m365-mac-mcp`).*
 
-![Release](https://img.shields.io/badge/Release-v2.2.0-blue)
+![Release](https://img.shields.io/badge/Release-v2.3.0-blue)
 ![macOS](https://img.shields.io/badge/macOS-27.x%20(Apple%20Silicon)-000000?logo=apple)
 ![Microsoft Office](https://img.shields.io/badge/Microsoft%20Office%20for%20Mac-16.x-D83B01?logo=microsoftoffice)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
@@ -43,7 +43,7 @@ This server combines **fast file-level manipulation** (`openpyxl`, `python-docx`
 
 ### Excel (File-Level & Live App)
 - **Workbook & Sheet Management:** Create, open, close, save (`.xlsx`, `.xlsm`, `.csv`, `.pdf`), add/rename/delete/activate worksheets, and one-call `inspect_workbook`.
-- **Bulk & Batch Operations:** Read/write cells and ranges (with `include_formulas` / `evaluate_formulas` aliases), `batch_write_ranges`, `batch_format_workbook`, `excel_live_batch_read_ranges`, and `excel_live_batch_write_cells`.
+- **Bulk & Batch Operations:** Read/write cells and ranges (with `include_formulas` / `evaluate_formulas` aliases), `batch_write_ranges` (including Excel-style `fill_formula` 1D/2D drag-fill translation and shape-aware orientation), `batch_format_workbook`, `excel_live_batch_read_ranges` (with live `calculate`, `#VALUE!`/`#DIV/0!` error surfacing, and unsaved in-memory edit warnings), and `excel_live_batch_write_cells`.
 - **Financial-Model Styling & Formatting:**
   - `format_range`, `format_worksheet`, `batch_format_workbook`, and `set_column_widths` (explicit widths or auto-fit with padding).
   - Supports comma-separated multi-ranges (`"B2:F3, B6:F7"`), merged font/alignment/border preservation, per-side borders (`thin`, `medium`, `thick`, `double`, `dashed`, `dotted`, `none`), and `auto_color_financial_model=True` (blue inputs, black same-sheet formulas, green cross-sheet links).
@@ -97,7 +97,7 @@ This server was developed, benchmarked, and end-to-end verified on the following
 | **Operating System** | **macOS 27.2.1** (Build `26B131`, Apple Silicon) |
 | **Microsoft 365 for Mac** | Excel `16.115`, Word `16.115.1`, PowerPoint `16.115.1` |
 | **MCP Client & Runtime** | **Bionic `1.2.1+10`** + **LM Studio** (local inference) |
-| **Local Inference Model** | **`Qwen3.6 35B A3B — Q8_0`** (Context `65536`, GPU Offload `40`, CPU Threads `6`, Eval Batch `2048`, Phys Batch `512`, Flash Attention `ON`, Temp `0.3`, Reasoning Budget `2048`, Preserve Thinking `OFF`, Unified + GPU KV Cache `ON`, Top-K `20`, Top-P `0.95`, Min-P `0.05`, Repeat Penalty `1.1`, Experts `8`) — see [`Sample Model Config/`](Sample%20Model%20Config/) |
+| **Local Inference Model** | **`Qwen3.6 35B A3B — Q8_0`** (Context `65536`, GPU Offload `40`, CPU Threads `6`, Eval Batch `2048`, Phys Batch `512`, Flash Attention `ON`, Temp `0.3`, Reasoning Budget `2048`, Preserve Thinking `OFF`, Unified + GPU KV Cache `ON`, Top-K `20`, Top-P `0.95`, Min-P `0.05`, Repeat Penalty `1.0` (`Off`), Experts `8`) — see [`Sample Model Config/`](Sample%20Model%20Config/) |
 | **Python Environment** | Python `3.12.16` (`.venv`), `mcp` `2.3.0`, `openpyxl` `3.1.5`, `python-docx` `1.2.0` |
 | **Recommended MCP Env** | `M365_MCP_PROFILE=EXCEL,COMPACT` (or `EXCEL`), `M365_MCP_LIVE_SYNC=AUTO`, `M365_MCP_FORMULA_GUARD=LITERALS_ONLY`, `M365_MCP_APPLESCRIPT_TIMEOUT=30` |
 
@@ -161,6 +161,7 @@ This server was developed, benchmarked, and end-to-end verified on the following
 | `M365_MCP_APPLESCRIPT_TIMEOUT` | `30.0` | Timeout in seconds for each `osascript` call. *(Legacy `OFFICE365_MCP_APPLESCRIPT_TIMEOUT` also accepted.)* |
 | `M365_MCP_ENABLE_APPLESCRIPT` | `true` | Enable or disable AppleScript bridge (`true`/`false`). *(Legacy `OFFICE365_MCP_ENABLE_APPLESCRIPT` also accepted.)* |
 | `M365_MCP_TEMP_DIR` | `/tmp/m365-mac-mcp` | Temporary directory for intermediate/unnamed files. *(Legacy `OFFICE365_MCP_TEMP_DIR` also accepted.)* |
+| `M365_MCP_DEBUG_LOG` | *(unset / off)* | Optional local JSONL file path to log every MCP tool call, arguments, latency (ms), warnings, and errors for debugging. |
 
 ### Tool Profiles (`M365_MCP_PROFILE`)
 
@@ -217,7 +218,7 @@ Register two entries pointing to the same server `.venv`:
 - **Context & Performance:** `Context Length = 65536`, `GPU Offload = 40`, `CPU Thread Pool Size = 6`, `Evaluation Batch Size = 2048`, `Physical Batch Size = 512`, `Max Concurrent Predictions = 1`, `Flash Attention = ON`
 - **Generation & Reasoning:** `Temperature = 0.3`, `Context Overflow = Stop at Limit`, `Reasoning Budget = 2048` (`"I have to answer now."`), `Preserve Thinking = OFF`
 - **Memory:** `Offload KV Cache to GPU = ON`, `Unified KV Cache = ON`, `Context Checkpoints = 32`, `Keep Model in Memory = ON`, `Try mmap() = ON`, `Speculative Decoding = Off`
-- **Sampling:** `Top K = 20`, `Top P = 0.95`, `Min P = 0.05`, `Repeat Penalty = 1.1`, `Number of Experts = 8`
+- **Sampling:** `Top K = 20`, `Top P = 0.95`, `Min P = 0.05`, `Repeat Penalty = 1.0` (`Off` — prevents JSON quote corruption on large 2D arrays), `Number of Experts = 8`
 - **System Prompt:** Copy [`Sample Model Config/SYSTEM_PROMPT.md`](Sample%20Model%20Config/SYSTEM_PROMPT.md) (`UNIVERSAL STERLING ENGINE V3.4 — FINANCE & M365 SPECIALIST`) into Bionic/LM Studio's System Prompt so the agent stays concise, avoids tool loops, blocks Bionic's built-in Office/shell bypasses, respects `M365_MCP_FORMULA_GUARD`, and uses your custom Finance `skills/` cleanly.
   > **Disclosure:** Applying `Sample Model Config/SYSTEM_PROMPT.md` **highly customizes the model for financial modeling, corporate valuation, Excel/VBA, and Microsoft 365 work only**. If you also use Bionic / LM Studio for general chat or non-finance coding, apply this prompt inside a dedicated Finance Project rather than as your global default.
 
@@ -408,11 +409,11 @@ Run the unit and integration test suite with the project virtual environment:
 .venv/bin/pytest tests/test_basic.py tests/test_word_excel_rw.py -v
 ```
 
-This runs **30 tests** covering:
-- Excel file-level read/write, batch formatting, named styles, tables, data validation, formula sheet-reference auto-quoting & auditing, `M365_MCP_FORMULA_GUARD` (`literals_only`/`strict`/`off`), and `M365_MCP_LIVE_SYNC` view-restore / unsaved-edits protection.
+This runs **37 tests** covering:
+- Excel file-level read/write, `batch_write_ranges` (`fill_formula` 1D/2D translation, `range`/`sheet`/`values` aliases, shape-aware auto-orientation, single-active-workbook `workbook_id` auto-resolution), batch formatting, named styles, tables, data validation, formula sheet-reference auto-quoting & auditing, `M365_MCP_FORMULA_GUARD` (`literals_only`/`strict`/`off`), and `M365_MCP_LIVE_SYNC` view-restore / unsaved-edits protection.
 - Word file-level creation, rich paragraph/table styling, search & replace, and `.docx` XML attributes (`w:tblHeader`, borders, shading, widths).
-- Composable `M365_MCP_PROFILE` filtering, compact JSON responses, stripped schema noise, sparse A1 formula maps, trimmed blank cells, legacy `OFFICE_MCP_*` / `office365_mcp_server.py` backwards compatibility, and automated validation of all 9 Finance `skills/*/SKILL.md` playbooks.
-- Hardened AppleScript generation and parsing for Excel `16.115` and Word `16.115.1`.
+- Composable `M365_MCP_PROFILE` filtering, compact JSON responses, stripped schema noise, sparse A1 formula maps, trimmed blank cells, opt-in `M365_MCP_DEBUG_LOG` wire logging, legacy `OFFICE_MCP_*` / `office365_mcp_server.py` backwards compatibility, and automated validation of all 9 Finance `skills/*/SKILL.md` playbooks.
+- Hardened AppleScript generation and parsing for Excel `16.115` and Word `16.115.1` (including live `calculate`, `#VALUE!`/`#DIV/0!` error surfacing, internal temp-file Grant Access guards, dirty in-memory warnings, and boolean `save_changes` coercion).
 
 ---
 
@@ -460,7 +461,8 @@ m365-mac-mcp/
 │   ├── EXECUTIVE_COMPARISON_MATRIX.md          # Standalone 16GB/32GB/64GB M4 comparison matrix
 │   └── HARDWARE_AND_PROFILE_GUIDE.md           # 16GB/32GB/64GB M4 model & M365_MCP_PROFILE guide
 ├── Sample Model Config/
-│   ├── SYSTEM_PROMPT.md                        # Recommended Bionic/LM Studio system prompt
+│   ├── SYSTEM_PROMPT.md                        # Recommended Qwen3.6 Finance & M365 system prompt
+│   ├── SYSTEM_PROMPT_GEMMA4_31B.md             # Dedicated Gemma 4 (31B / 26B A4B MLX) system prompt
 │   ├── bionic_mcp_config_part1.jpg             # Bionic MCP server setup (Connection, Command, Args)
 │   ├── bionic_mcp_config_part2.jpg             # Bionic MCP server setup (Env vars, Working dir)
 │   ├── qwen3.6_35b_a3b_q8_0_config_part1.png   # LM Studio model config (Prompt, Context, Reasoning)

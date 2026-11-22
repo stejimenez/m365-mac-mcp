@@ -10,7 +10,7 @@ description: Build dynamic IFRS/FASB multi-year 3-statement Excel projections wi
 - **Deliverable:** Dynamically linked multi-year IS, BS, and CF projections driven by an `Assumptions` tab with a `Base`/`Bull`/`Bear` dropdown and live-verified `Balance Check = 0`.
 
 ## 2. Mandatory Pre-Flight / HALT Inputs
-Confirm concisely before writing projections:
+**HARD STOP (ZERO TOOLS):** If ANY item below is missing from the user's prompt, reply ONLY with 1–3 concise questions and call **ZERO tools** (do NOT call `create_workbook` or invent assumptions):
 - Accounting basis: **IFRS** or **US GAAP (FASB)** (`IAS 7` vs. `ASC 230` Cash Flow classification; `IFRS 16` vs. `ASC 842` leases).
 - Forecast horizon (e.g., 5 years) and currency/units (`$M`).
 - Core drivers (or approval to use trailing historical averages as Base): Revenue growth %, Gross Margin %, OpEx % of Rev, Tax Rate %, D&A %, CapEx %, DSO/DIO/DPO, and Debt/Distributions.
@@ -19,7 +19,7 @@ Confirm concisely before writing projections:
 1. **Audit Historicals:** Call `inspect_workbook(file_path=...)` and `audit_workbook_formulas(file_path=...)` to verify the base.
 2. **Open & Add Assumptions Tab:** Call `open_workbook`, then `add_worksheet(workbook_id, "Assumptions", position=0)`.
 3. **Add Scenario Dropdown:** Call `add_data_validation(validation_type="list", formula1=["Base", "Bull", "Bear"])` on `Assumptions!B2` and wire active drivers via `=IF($B$2="Bull", ..., IF($B$2="Bear", ..., ...))`.
-4. **Write Projections (1 Call):** Call `batch_write_ranges` across `Assumptions`, `Income Statement`, `Balance Sheet`, and `Cash Flow`:
+4. **Write Projections (1 `batch_write_ranges` Call PER Sheet — write Labels/Inputs + `fill_formula` across projected columns, NEVER hand-calculate in `<think>`):** Across `Assumptions`, `Income Statement`, `Balance Sheet`, and `Cash Flow`:
    - **IS:** Dynamic Revenue, COGS, OpEx, EBIT, Taxes (`IAS 12`/`ASC 740`), Net Income.
    - **BS:** Working capital via DSO/DIO/DPO, PP&E roll-forward (`Prior + CapEx - D&A` per `IAS 16`/`ASC 360`), Retained Earnings (`Prior RE + 'Income Statement'!NI - Distributions`), **Cash linked to `'Cash Flow'!Ending Cash`**, and `Balance Check = Assets - L&E`.
    - **CF:** Net Income link, `+D&A`, Working Capital deltas (`-ΔAR`, `-ΔInv`, `+ΔAP`), CapEx, Financing, Net Change in Cash, Ending Cash.

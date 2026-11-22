@@ -1070,6 +1070,9 @@ class AppleScriptBridge:
                 try
                     if shouldActivate then activate
                     set wb to open workbook workbook file name (targetFile as text) read only isReadOnly
+                    try
+                        calculate
+                    end try
                     set wbName to name of wb
                     set activeSh to name of active sheet of wb
                     set display alerts to prevAlerts
@@ -2238,6 +2241,9 @@ class AppleScriptBridge:
                     set wb to workbook wbTarget
                 end if
                 set wbName to name of wb
+                try
+                    calculate
+                end try
                 repeat with reqStr in reqList
                     set AppleScript's text item delimiters to us
                     set parts to text items of (reqStr as text)
@@ -2253,11 +2259,15 @@ class AppleScriptBridge:
                         set actualSh to name of sh
                         set rng to range refStr of sh
                         set rVals to value of rng
+                        set rStrs to missing value
+                        try
+                            set rStrs to string value of rng
+                        end try
                         set rFmls to missing value
                         if incFormulas then
                             set rFmls to formula of rng
                         end if
-                        set end of rawResults to {actualSh, refStr, rVals, rFmls}
+                        set end of rawResults to {actualSh, refStr, rVals, rFmls, rStrs}
                     end if
                 end repeat
             end tell
@@ -2268,12 +2278,14 @@ class AppleScriptBridge:
                 set refStr to item 2 of itemRec
                 set rVals to item 3 of itemRec
                 set rFmls to item 4 of itemRec
+                set rStrs to item 5 of itemRec
                 set valBlock to my matrix_to_text(rVals, us, rs)
                 set fmlBlock to ""
                 if incFormulas then
                     set fmlBlock to my matrix_to_text(rFmls, us, rs)
                 end if
-                set end of outBlocks to (actualSh & us & refStr & gs & valBlock & gs & fmlBlock)
+                set strBlock to my matrix_to_text(rStrs, us, rs)
+                set end of outBlocks to (actualSh & us & refStr & gs & valBlock & gs & fmlBlock & gs & strBlock)
             end repeat
 
             set AppleScript's text item delimiters to fs
@@ -2339,7 +2351,17 @@ class AppleScriptBridge:
             hdr = secs[0].split(_US) if secs else ["", ""]
             val_block = secs[1] if len(secs) > 1 else ""
             fml_block = secs[2] if len(secs) > 2 else ""
+            str_block = secs[3] if len(secs) > 3 else ""
             values = [row.split(_US) for row in val_block.split(_RS)] if val_block else []
+            if str_block and values:
+                str_rows = [row.split(_US) for row in str_block.split(_RS)]
+                for r_i, row in enumerate(values):
+                    if r_i < len(str_rows):
+                        for c_i, cell_val in enumerate(row):
+                            if (cell_val == "" or cell_val is None) and c_i < len(str_rows[r_i]):
+                                sv = str_rows[r_i][c_i].strip()
+                                if sv.startswith("#"):
+                                    row[c_i] = sv
             range_str = hdr[1] if len(hdr) > 1 else ""
             entry: Dict[str, Any] = {
                 "sheet_name": hdr[0],

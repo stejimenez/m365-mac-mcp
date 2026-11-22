@@ -10,7 +10,7 @@ description: Build a reusable IFRS/FASB/SOX multi-segment DCF valuation template
 - **Deliverable:** A 5-tab template (`Dashboard`, `WACC & Inputs`, `Segment Cash Flows`, `DCF Valuation`, `Sensitivity`) with `Base`/`Bull`/`Bear` switching, dual Terminal Value methods, and live-verified Share Price.
 
 ## 2. Mandatory Pre-Flight / HALT Inputs
-Confirm concisely before building:
+**HARD STOP (ZERO TOOLS):** If ANY item below is missing from the user's prompt, reply ONLY with 1–3 concise questions and call **ZERO tools** (do NOT call `create_workbook` or invent assumptions):
 - Reporting framework: **IFRS** or **US GAAP (FASB)** (governs `IFRS 16` vs. `ASC 842` lease liabilities in Debt, EBITDA, and EV/EBITDA exit multiples).
 - Company/project name, currency & units (`$M`), forecast horizon (default 5 years), and segment/stream names.
 - WACC inputs (`Rf`, `ERP`, `Beta`, `Kd`, `Tax Rate`, target `D/E`) or direct WACC %, Terminal Growth `g` and/or Exit EV/EBITDA multiple, plus EV Bridge items (Total Debt, Lease Liabilities, Cash, Minority Interest, Preferred Stock, Diluted Shares).
@@ -18,7 +18,7 @@ Confirm concisely before building:
 ## 3. Exact m365-mac-mcp Tool Sequence
 1. **Create All 5 Tabs (1 Call):** Call `create_workbook(title=..., sheet_names=["Dashboard", "WACC & Inputs", "Segment Cash Flows", "DCF Valuation", "Sensitivity"])`.
 2. **Add Scenario Control:** Call `add_data_validation(validation_type="list", formula1=["Base", "Bull", "Bear"])` on `Dashboard!B2`.
-3. **Write All 5 Tabs (1 Call):** Call `batch_write_ranges`:
+3. **Write All 5 Tabs (1 `batch_write_ranges` Call PER Sheet — write Labels/Inputs + `fill_formula` across each repeated formula row/grid, NEVER hand-calculate in `<think>`):**
    - **`WACC & Inputs`:** CAPM `Ke = Rf + Beta * ERP`, `Kd_after_tax = Kd * (1 - TaxRate)`, `WACC = We*Ke + Wd*Kd_after_tax`, and Base/Bull/Bear drivers.
    - **`Segment Cash Flows`:** Per-segment Revenue, EBITDA, D&A, CapEx, ΔNWC rolling into consolidated totals (`=SUM(...)`).
    - **`DCF Valuation`:** EBIT, Taxes (`IAS 12`/`ASC 740`), NOPAT, `+D&A`, `-CapEx`, `-ΔNWC` → **UFCF**; Discount Factors (optional `-0.5` mid-year toggle); **PV of UFCF**; **Terminal Value (Gordon Growth `=FinalUFCF*(1+g)/(WACC-g)` + Exit Multiple `=FinalEBITDA*Multiple`)**; **EV → Equity Bridge** (`EV - Debt - Leases + Cash - Minority Interest - Preferred = Equity Value`; `Implied Share Price = Equity Value / Diluted Shares`).

@@ -9,6 +9,27 @@ This project follows [Semantic Versioning (`MAJOR.MINOR.PATCH`)](https://semver.
 
 ---
 
+## [v2.3.0] - 2026-11-22
+
+### Added
+- **Excel-Style Formula Drag/Fill (`fill_formula`) in `batch_write_ranges`:** Supports 1D horizontal/vertical rows and 2D sensitivity grids (`{"sheet_name": "...", "range": "C4:H4", "fill_formula": "=C2*C3"}`) using `openpyxl.formula.translate.Translator`, cutting formula output tokens by 60–80%, eliminating off-by-one column typos, and respecting `$` anchors, spaced sheet quoting, and `M365_MCP_FORMULA_GUARD`.
+- **Opt-In MCP Wire Debug Logger (`M365_MCP_DEBUG_LOG`):** Optional local JSONL logger (off by default) recording tool name, arguments, latency (ms), status, warnings, errors, and response previews for real-time debugging without polluting `stdout`/`stderr`.
+- **Dedicated Gemma 4 System Prompt (`Sample Model Config/SYSTEM_PROMPT_GEMMA4_31B.md`):** Separate Finance & M365 system prompt tailored for Gemma 4 (`31B` / `26B A4B` MLX) with strict JSON, `fill_formula`, `SKILL-FIRST`, and `HARD STOP` rules.
+- **Dirty In-Memory Warning on Live Excel Reads:** `excel_live_read_range` and `excel_live_batch_read_ranges` now emit a 1-line `warning` **only** when a matching in-memory `openpyxl` workbook has unsaved file-level edits not yet synced via `save_workbook` (zero extra tokens when clean).
+- **Automated Test Coverage:** Expanded suite from **30 → 37 passing tests** covering `fill_formula` 1D/2D translation, `workbook_id` auto-resolution, LLM parameter aliases & shape-aware orientation, internal temp-file Grant Access guards, live `#VALUE!`/`#DIV/0!` surfacing, boolean `save_changes` coercion, dirty-state warnings, and `M365_MCP_DEBUG_LOG`.
+
+### Changed
+- **Universal `workbook_id` Auto-Resolution:** Made `workbook_id: Optional[str] = None` across all 12 compact Excel workbook-handle tools (`list_worksheets`, `add_worksheet`, `delete_worksheet`, `read_range`, `write_cell`, `batch_write_ranges`, `batch_format_workbook`, `add_data_validation`, `add_excel_table`, `create_chart`, `save_workbook`, `close_workbook`), auto-resolving when exactly 1 workbook is active in memory while remaining 100% backwards-compatible for explicit positional/keyword callers.
+- **Universal LLM Parameter Aliases & Shape-Aware Orientation:**
+  - `batch_write_ranges` now resolves `start_cell`/`range`/`cell_range`/`cell`, `sheet_name`/`sheet`/`worksheet`/`worksheet_name`/`tab`, and `data`/`values`, wraps flat 1D lists, and auto-orients transposed `N×1`/`1×N` arrays to match explicit ranges (e.g., `B3:F3`).
+  - `read_range` now accepts `range` alongside `cell_range` and `range_ref`; `excel_live_close` and `word_live_close` coerce boolean `save_changes` (`true`/`false` → `"yes"`/`"no"`).
+- **Hardened Live Excel Recalculation & macOS Sandbox Safety:**
+  - Added live `calculate` in `open_excel_file` and `batch_read_live_excel_ranges`, plus `string value` fallback so `#VALUE!`, `#DIV/0!`, `#REF!`, `#NAME?`, `#N/A`, and `#NUM!` surface verbatim instead of blank strings.
+  - Blocked `excel_live_open` and `word_live_open` on internal `/tmp` and macOS `/var/folders/.../T/` UUID temp files to eliminate macOS Office **Grant Access** modal hangs.
+- **Hardened Prompts & Builder Skills:** Updated `SYSTEM_PROMPT.md` (`HARD STOP (ZERO TOOLS)`, `SKILL-FIRST`, no sandbox/Python bypass, `save_workbook` sync, no mental pre-calculation) and builder skills (`capex-project-analyzer`, `dcf-investment-template-builder`, `three-statement-projector`) for 1-call-per-sheet `fill_formula` builds; updated `README.md` reference config to `Repeat Penalty = 1.0 (Off)`.
+
+---
+
 ## [v2.2.0] - 2026-11-21
 
 ### Added
