@@ -18,7 +18,7 @@ SRC_DIR = str(Path(__file__).resolve().parent.parent / "src")
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
-import office365_mcp_server as server
+import m365_mac_mcp_server as server
 from controllers.excel_controller import ExcelController
 from controllers.word_controller import WordController
 from integrations.applescript_bridge import AppleScriptBridge, AppleScriptTimeoutError
@@ -793,16 +793,17 @@ async def test_mcp_server_registers_new_formatting_tools():
 
 @pytest.mark.asyncio
 async def test_mcp_server_compact_profile_reduces_tools():
-    """Verify OFFICE_MCP_PROFILE=compact exposes the lean core Word+Excel toolset cleanly."""
+    """Verify M365_MCP_PROFILE=compact (and legacy OFFICE_MCP_PROFILE + shim) exposes the lean core Word+Excel toolset cleanly."""
     import os
     env = dict(os.environ)
-    env["OFFICE_MCP_PROFILE"] = "compact"
+    env.pop("OFFICE_MCP_PROFILE", None)
+    env["M365_MCP_PROFILE"] = "compact"
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
         "-c",
         (
             "import asyncio, json, sys; sys.path.insert(0, 'src'); "
-            "import office365_mcp_server as s; "
+            "import m365_mac_mcp_server as s; "
             "tools = asyncio.run(s.mcp.list_tools()); "
             "print(json.dumps([t.name for t in tools]))"
         ),
@@ -830,7 +831,7 @@ async def test_mcp_server_compact_profile_reduces_tools():
         assert core in names
     assert "create_presentation" not in names
 
-    # Verify composable app profiles: excel,compact (~31), word,powerpoint (~33), and invalid fallback
+    # Verify composable app profiles: excel,compact (25), word,powerpoint (33), invalid fallback, and legacy shim + OFFICE_MCP_PROFILE fallback
     for prof, must_have, must_not_have in (
         (
             "excel,compact",
@@ -847,13 +848,15 @@ async def test_mcp_server_compact_profile_reduces_tools():
         ("word,powerpoint", {"create_document", "word_live_list_documents", "create_presentation"}, {"open_workbook", "excel_live_open"}),
         ("invalid_profile_xyz", {"open_workbook", "create_document", "create_presentation"}, set()),
     ):
-        env_p = dict(os.environ, OFFICE_MCP_PROFILE=prof)
+        env_p = dict(os.environ)
+        env_p.pop("OFFICE_MCP_PROFILE", None)
+        env_p["M365_MCP_PROFILE"] = prof
         p2 = await asyncio.create_subprocess_exec(
             sys.executable,
             "-c",
             (
                 "import asyncio, json, sys; sys.path.insert(0, 'src'); "
-                "import office365_mcp_server as s; "
+                "import m365_mac_mcp_server as s; "
                 "tools = asyncio.run(s.mcp.list_tools()); "
                 "print(json.dumps({'profile': s._ACTIVE_PROFILE_LABEL, 'names': [t.name for t in tools]}))"
             ),
@@ -871,7 +874,32 @@ async def test_mcp_server_compact_profile_reduces_tools():
             assert exc not in name_set, f"{exc} unexpectedly present in profile {prof}"
         if prof == "invalid_profile_xyz":
             assert parsed["profile"] == "full"
-            assert "Unknown OFFICE_MCP_PROFILE" in err2.decode("utf-8", errors="replace")
+            assert "Unknown M365_MCP_PROFILE" in err2.decode("utf-8", errors="replace")
+
+    # Verify legacy office365_mcp_server.py shim + OFFICE_MCP_PROFILE fallback still works cleanly
+    env_legacy = dict(os.environ)
+    env_legacy.pop("M365_MCP_PROFILE", None)
+    env_legacy["OFFICE_MCP_PROFILE"] = "excel,compact"
+    p_leg = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        (
+            "import asyncio, json, sys; sys.path.insert(0, 'src'); "
+            "import office365_mcp_server as s; "
+            "tools = asyncio.run(s.mcp.list_tools()); "
+            "print(json.dumps({'profile': s._ACTIVE_PROFILE_LABEL, 'count': len(tools)}))"
+        ),
+        env=env_legacy,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    out_leg, err_leg = await p_leg.communicate()
+    assert p_leg.returncode == 0, err_leg.decode("utf-8", errors="replace")
+    parsed_leg = json.loads(out_leg.decode("utf-8"))
+    assert parsed_leg["profile"] == "excel,compact"
+    assert parsed_leg["count"] == 25
+    err_leg_text = err_leg.decode("utf-8", errors="replace")
+    assert "deprecated" in err_leg_text.lower()
 
     # Verify case-insensitivity (ALLCAPS, MixedCaps, smallcaps, and aliases like XLS)
     for raw_val in ("EXCEL,COMPACT", "Excel,Compact", "excel,compact", "XLS, Compact"):
@@ -1069,10 +1097,16 @@ async def test_comma_separated_ranges_and_auto_color_financial_model(tmp_path: P
 
 @pytest.mark.asyncio
 async def test_office_mcp_live_sync_modes_and_auto_reload(monkeypatch, tmp_path: Path):
-    """Verify OFFICE_MCP_LIVE_SYNC (AUTO/Auto/auto/OFF/Off/off) auto-reloads saved files and guards unsaved edits."""
+    """Verify M365_MCP_LIVE_SYNC (and legacy OFFICE_MCP_LIVE_SYNC fallback) auto-reloads saved files and guards unsaved edits."""
     # 1. Case-insensitive parsing & default='auto'
+    monkeypatch.delenv("M365_MCP_LIVE_SYNC", raising=False)
     monkeypatch.delenv("OFFICE_MCP_LIVE_SYNC", raising=False)
     assert ExcelController.get_live_sync_mode() == "auto"
+    monkeypatch.setenv("OFFICE_MCP_LIVE_SYNC", "OFF")
+    assert ExcelController.get_live_sync_mode() == "off"
+    monkeypatch.setenv("M365_MCP_LIVE_SYNC", "AUTO")
+    assert ExcelController.get_live_sync_mode() == "auto"
+    monkeypatch.delenv("OFFICE_MCP_LIVE_SYNC", raising=False)
     for raw in ("AUTO", "Auto", "auto"):
         assert ExcelController.get_live_sync_mode(raw) == "auto"
     for raw in ("OFF", "Off", "off"):
@@ -1108,7 +1142,7 @@ async def test_office_mcp_live_sync_modes_and_auto_reload(monkeypatch, tmp_path:
         events.append(f"restore:{state.get('zoom')}")
         return True
 
-    monkeypatch.setenv("OFFICE_MCP_LIVE_SYNC", "Auto")
+    monkeypatch.setenv("M365_MCP_LIVE_SYNC", "Auto")
     monkeypatch.setattr(server.excel.applescript, "find_open_excel_workbook_by_path", fake_find_saved)
     monkeypatch.setattr(server.excel.applescript, "capture_excel_workbook_view_state", fake_capture)
     monkeypatch.setattr(server.excel.applescript, "close_excel_workbook", fake_close)
@@ -1138,7 +1172,7 @@ async def test_office_mcp_live_sync_modes_and_auto_reload(monkeypatch, tmp_path:
 
     # 4. OFF mode: never queries live Excel
     events.clear()
-    monkeypatch.setenv("OFFICE_MCP_LIVE_SYNC", "OFF")
+    monkeypatch.setenv("M365_MCP_LIVE_SYNC", "OFF")
     saved_off = await server.save_workbook(wb_id, str(out_file), format="xlsx")
     _assert_strict_json(saved_off)
     assert saved_off["status"] == "success"
@@ -1506,12 +1540,20 @@ async def test_batch_format_workbook_accepts_llm_style_aliases_and_warns_unknown
 
 @pytest.mark.asyncio
 async def test_office_mcp_formula_guard_file_and_live(monkeypatch):
-    """Verify OFFICE_MCP_FORMULA_GUARD (literals_only default | strict | off) across all 6 Excel write tools."""
+    """Verify M365_MCP_FORMULA_GUARD (and legacy OFFICE_MCP_FORMULA_GUARD fallback) across all 6 Excel write tools."""
     from controllers.excel_controller import ExcelController
 
     # 1. Case-insensitive mode parsing + fallback
+    monkeypatch.delenv("M365_MCP_FORMULA_GUARD", raising=False)
     monkeypatch.delenv("OFFICE_MCP_FORMULA_GUARD", raising=False)
     assert ExcelController.get_formula_guard_mode() == "literals_only"
+    monkeypatch.setenv("OFFICE_MCP_FORMULA_GUARD", "STRICT")
+    assert ExcelController.get_formula_guard_mode() == "strict"
+    assert AppleScriptBridge.get_formula_guard_mode() == "strict"
+    monkeypatch.setenv("M365_MCP_FORMULA_GUARD", "literals_only")
+    assert ExcelController.get_formula_guard_mode() == "literals_only"
+    assert AppleScriptBridge.get_formula_guard_mode() == "literals_only"
+    monkeypatch.delenv("OFFICE_MCP_FORMULA_GUARD", raising=False)
     assert ExcelController.get_formula_guard_mode("STRICT") == "strict"
     assert ExcelController.get_formula_guard_mode("Off") == "off"
     assert ExcelController.get_formula_guard_mode("bogus") == "literals_only"
@@ -1566,19 +1608,19 @@ async def test_office_mcp_formula_guard_file_and_live(monkeypatch):
     assert ok_override["formulas_updated"] == 1
 
     # 3. 'strict' mode also blocks Formula -> new Formula
-    monkeypatch.setenv("OFFICE_MCP_FORMULA_GUARD", "STRICT")
+    monkeypatch.setenv("M365_MCP_FORMULA_GUARD", "STRICT")
     blk_strict = await server.write_cell(wb_id, "Model", "C3", "=C2*3")
     assert blk_strict["status"] == "confirmation_required"
     assert blk_strict["guard_mode"] == "strict"
 
     # 4. 'off' mode allows everything
-    monkeypatch.setenv("OFFICE_MCP_FORMULA_GUARD", "off")
+    monkeypatch.setenv("M365_MCP_FORMULA_GUARD", "off")
     ok_off = await server.write_cell(wb_id, "Model", "C3", 240)
     assert ok_off["status"] == "success"
     await server.close_workbook(wb_id)
 
     # 5. Live Excel writers parse BLOCKED responses & pass guardMode arg cleanly
-    monkeypatch.setenv("OFFICE_MCP_FORMULA_GUARD", "literals_only")
+    monkeypatch.setenv("M365_MCP_FORMULA_GUARD", "literals_only")
     us, rs, gs = chr(31), chr(30), chr(29)
     captured_args = []
 
@@ -1613,14 +1655,31 @@ async def test_office_mcp_formula_guard_file_and_live(monkeypatch):
 
 def test_all_finance_skills_valid_schema_size_and_compliance():
     """Verify every skills/*/SKILL.md is pure Markdown (2-4 KB), 5-block, IFRS/FASB/SOX compliant, and references valid tools/params."""
+    import json
     import re
+    import subprocess
 
     skills_root = Path(__file__).resolve().parent.parent / "skills"
     skill_files = sorted(skills_root.glob("*/SKILL.md"))
-    assert len(skill_files) >= 7
+    assert len(skill_files) >= 9
 
     tools_map = server.mcp._tool_manager._tools
     valid_tools = set(tools_map.keys())
+
+    # Fetch exact excel,compact tool set so we guarantee all Excel skills work under excel,compact
+    compact_out = subprocess.check_output(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json, os, sys; os.environ['M365_MCP_PROFILE']='excel,compact'; "
+                "sys.path.insert(0, 'src'); import m365_mac_mcp_server as s; "
+                "print(json.dumps(sorted(s.mcp._tool_manager._tools.keys())))"
+            ),
+        ],
+        text=True,
+    )
+    excel_compact_tools = set(json.loads(compact_out))
 
     for p in skill_files:
         txt = p.read_text(encoding="utf-8")
@@ -1630,6 +1689,11 @@ def test_all_finance_skills_valid_schema_size_and_compliance():
         for idx in range(1, 6):
             assert f"## {idx}." in txt, f"{p.parent.name} missing section ## {idx}."
         assert "IFRS" in txt and "FASB" in txt and "SOX" in txt, f"{p.parent.name} missing IFRS/FASB/SOX compliance"
+
+        mentioned_tools = {w for w in re.findall(r"\b[a-z][a-z0-9_]+\b", txt) if w in valid_tools}
+        if p.parent.name != "boardroom-brief-generator":
+            missing_in_compact = mentioned_tools - excel_compact_tools
+            assert not missing_in_compact, f"{p.parent.name} uses tools missing from excel,compact: {missing_in_compact}"
 
         for fn_name, arg_str in re.findall(r"([a-z][a-z0-9_]+)\(([^)\n]*)\)", txt):
             if fn_name in valid_tools:
@@ -1650,3 +1714,90 @@ async def test_create_workbook_multi_sheet_names_one_call():
     assert res["worksheet_count"] == 3
     assert res["active_sheet"] == "Income Statement"
     await server.close_workbook(res["workbook_id"])
+
+
+@pytest.mark.asyncio
+async def test_v22_efficiency_and_safety_improvements(monkeypatch, tmp_path: Path):
+    """Verify sheet_names filtering in inspect_workbook, read_range trimming/max_cols, smart SOX audit, deferred disk save, and add_formula STRICT guard."""
+    # 1. inspect_workbook(sheet_names=...) + read_range trimming & max_cols
+    wb = await server.create_workbook(
+        title="MultiTab Raw",
+        sheet_names=["Cover", "Income Statement", "Balance Sheet", "Footnotes", "Charts"],
+    )
+    wb_id = wb["workbook_id"]
+    await server.batch_write_ranges(
+        wb_id,
+        operations=[
+            {
+                "sheet_name": "Income Statement",
+                "start_cell": "A1",
+                "data": [
+                    ["Line Item", "FY23", "FY24", "FY25"],
+                    ["Revenue", 100, 110, 125],
+                    ["COGS", 40, 44, 50],
+                    ["Gross Profit", "=B2-B3", "=C2-C3", 75],  # D4: horizontal formula-row break!
+                    ["Operating Expenses", 20, 22, 25],
+                    ["EBITDA", "=B4-B5", "=C4-C5", "=D4-D5"],
+                    ["Total Margin %", "=B6/B2", "=C6/C2", "=D6/D2"],
+                    ["Net Income", "=B6*0.75", "=C6*0.75", "=D6*0.75"],
+                ],
+            },
+            {
+                "sheet_name": "Balance Sheet",
+                "start_cell": "A1",
+                "data": [["Item", "FY23", "FY24"], ["Cash", 50, 65]],
+            },
+        ],
+    )
+
+    insp = await server.inspect_workbook(
+        wb_id, sheet_names=["income statement", "Balance Sheet", "NoSuchTab"]
+    )
+    assert insp["status"] == "success"
+    assert insp["sheet_count"] == 5
+    assert insp["inspected_sheet_count"] == 2
+    assert [s["sheet_name"] for s in insp["sheets"]] == ["Income Statement", "Balance Sheet"]
+    assert insp["missing_sheets"] == ["NoSuchTab"]
+    assert insp["sheets"][0]["formulas"]["B4"] == "=B2-B3"
+
+    # Explicit read_range trims trailing blanks and respects max_cols
+    rr_trim = await server.read_range(wb_id, sheet_name="Balance Sheet", cell_range="A1:Z20")
+    assert rr_trim["rows"] == 2 and rr_trim["columns"] == 3
+    rr_cap = await server.read_range(wb_id, sheet_name="Income Statement", cell_range="A1:D8", max_cols=2)
+    assert rr_cap["columns"] == 2 and rr_cap.get("truncated") is True
+
+    # 2. High-precision SOX 404 suspicious_literals: flags D4 override, NOT Revenue/COGS/OpEx inputs
+    aud = await server.audit_workbook_formulas(wb_id)
+    assert aud["status"] == "success"
+    flagged_cells = {item["cell"] for item in aud.get("suspicious_literals", [])}
+    assert "D4" in flagged_cells
+    for legit_input in ("B2", "C2", "D2", "B3", "C3", "D3", "B5", "C5", "D5"):
+        assert legit_input not in flagged_cells, f"False positive on input cell {legit_input}"
+
+    # 3. Deferred disk save: intermediate edits on an opened file must NOT mutate disk until save_workbook
+    disk_file = tmp_path / "Deferred_Save_Test.xlsx"
+    await server.save_workbook(wb_id, str(disk_file), format="xlsx")
+    await server.close_workbook(wb_id)
+
+    orig_bytes = disk_file.read_bytes()
+    opened = await server.open_workbook(str(disk_file))
+    wb2 = opened["workbook_id"]
+    await server.write_cell(wb2, "Balance Sheet", "B2", 999999)
+    assert disk_file.read_bytes() == orig_bytes, "Intermediate write mutated disk before save_workbook!"
+
+    # 4. add_formula respects M365_MCP_FORMULA_GUARD=STRICT
+    monkeypatch.delenv("OFFICE_MCP_FORMULA_GUARD", raising=False)
+    monkeypatch.setenv("M365_MCP_FORMULA_GUARD", "STRICT")
+    blk = await server.add_formula(wb2, "Income Statement", "B4", "=B2-B3+1")
+    assert blk["status"] == "confirmation_required"
+    assert blk["guard_mode"] == "strict"
+    ok_fml = await server.add_formula(
+        wb2, "Income Statement", "B4", "=B2-B3+1", allow_formula_overwrite=True
+    )
+    assert ok_fml["status"] == "success"
+    assert ok_fml["formulas_updated"] == 1
+
+    # Explicit save_workbook finally persists changes to disk
+    await server.save_workbook(wb2, str(disk_file), format="xlsx")
+    assert disk_file.read_bytes() != orig_bytes
+    await server.close_workbook(wb2)

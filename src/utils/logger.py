@@ -22,7 +22,7 @@ def setup_logger(
 
     Args:
         name: Logger name.
-        level: Logging level (defaults to OFFICE365_MCP_LOG_LEVEL or INFO).
+        level: Logging level (defaults to M365_MCP_LOG_LEVEL / OFFICE365_MCP_LOG_LEVEL or INFO).
         log_file: Optional log file path.
 
     Returns:
@@ -35,6 +35,7 @@ def setup_logger(
 
     effective_level = (
         level
+        or os.getenv("M365_MCP_LOG_LEVEL")
         or os.getenv("OFFICE365_MCP_LOG_LEVEL", "INFO")
     ).upper()
     logger.setLevel(getattr(logging, effective_level, logging.INFO))

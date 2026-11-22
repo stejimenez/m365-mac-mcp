@@ -15,7 +15,7 @@ class ServerConfig:
     """Server configuration settings."""
 
     log_level: str = "INFO"
-    temp_dir: str = str(Path(tempfile.gettempdir()) / "office365_mcp")
+    temp_dir: str = str(Path(tempfile.gettempdir()) / "m365-mac-mcp")
     max_presentations: int = 20
     max_documents: int = 20
     max_workbooks: int = 20
@@ -52,14 +52,14 @@ class Config:
                 pass
 
         env_overrides = {
-            "log_level": os.getenv("OFFICE365_MCP_LOG_LEVEL"),
-            "temp_dir": os.getenv("OFFICE365_MCP_TEMP_DIR"),
-            "max_presentations": os.getenv("OFFICE365_MCP_MAX_PRESENTATIONS"),
-            "max_documents": os.getenv("OFFICE365_MCP_MAX_DOCUMENTS"),
-            "max_workbooks": os.getenv("OFFICE365_MCP_MAX_WORKBOOKS"),
-            "applescript_timeout": os.getenv("OFFICE365_MCP_APPLESCRIPT_TIMEOUT"),
-            "enable_applescript": os.getenv("OFFICE365_MCP_ENABLE_APPLESCRIPT"),
-            "enable_cloud_api": os.getenv("OFFICE365_MCP_ENABLE_CLOUD_API"),
+            "log_level": os.getenv("M365_MCP_LOG_LEVEL") or os.getenv("OFFICE365_MCP_LOG_LEVEL"),
+            "temp_dir": os.getenv("M365_MCP_TEMP_DIR") or os.getenv("OFFICE365_MCP_TEMP_DIR"),
+            "max_presentations": os.getenv("M365_MCP_MAX_PRESENTATIONS") or os.getenv("OFFICE365_MCP_MAX_PRESENTATIONS"),
+            "max_documents": os.getenv("M365_MCP_MAX_DOCUMENTS") or os.getenv("OFFICE365_MCP_MAX_DOCUMENTS"),
+            "max_workbooks": os.getenv("M365_MCP_MAX_WORKBOOKS") or os.getenv("OFFICE365_MCP_MAX_WORKBOOKS"),
+            "applescript_timeout": os.getenv("M365_MCP_APPLESCRIPT_TIMEOUT") or os.getenv("OFFICE365_MCP_APPLESCRIPT_TIMEOUT"),
+            "enable_applescript": os.getenv("M365_MCP_ENABLE_APPLESCRIPT") or os.getenv("OFFICE365_MCP_ENABLE_APPLESCRIPT"),
+            "enable_cloud_api": os.getenv("M365_MCP_ENABLE_CLOUD_API") or os.getenv("OFFICE365_MCP_ENABLE_CLOUD_API"),
         }
 
         for key, value in env_overrides.items():

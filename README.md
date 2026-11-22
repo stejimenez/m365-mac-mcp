@@ -2,7 +2,7 @@
 
 *Dual-mode (file-level + live AppleScript) MCP server for Microsoft Excel, Word, and PowerPoint — verified on **macOS 27.x** & **Microsoft Office 16.x** (`m365-mac-mcp`).*
 
-![Release](https://img.shields.io/badge/Release-v2.1.2-blue)
+![Release](https://img.shields.io/badge/Release-v2.2.0-blue)
 ![macOS](https://img.shields.io/badge/macOS-27.x%20(Apple%20Silicon)-000000?logo=apple)
 ![Microsoft Office](https://img.shields.io/badge/Microsoft%20Office%20for%20Mac-16.x-D83B01?logo=microsoftoffice)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
@@ -29,8 +29,8 @@ This server combines **fast file-level manipulation** (`openpyxl`, `python-docx`
   - **Deduplicated Word reads (`read_document`):** Omits duplicate `full_text` (opt-in via `include_full_text=True`), duplicate `headings`, default `"style": "Normal"`, and empty metadata/tables — cutting Word read tokens by **~40%–50%** with zero data loss.
   - **Compacted MCP tool schemas** strip Pydantic `"title"`, redundant `"default": null`, and verbose nullable `anyOf` wrappers (**-35%** per-turn schema overhead) while preserving full runtime validation.
   - **Trimmed trailing blanks & omitted empty boilerplate** keep responses tight without hiding non-empty data or truncation flags.
-- **Live Excel Auto-Sync (`OFFICE_MCP_LIVE_SYNC=auto`):** When `save_workbook` writes to a file already open in Excel with no unsaved edits, it automatically captures the window bounds, active sheet, zoom, scroll position, and selection, reloads the saved file in Excel, and restores your exact view. If you have unsaved manual edits in Excel, it refuses to overwrite so your work is never lost.
-- **Composable Tool Profiles (`OFFICE_MCP_PROFILE`):** Trim the exposed toolset (e.g., `excel,compact`, `excel`, `word`, `word,powerpoint`) to cut schema token overhead by up to 60%+ on local LLMs (LM Studio / Bionic).
+- **Live Excel Auto-Sync (`M365_MCP_LIVE_SYNC=auto`):** When `save_workbook` writes to a file already open in Excel with no unsaved edits, it automatically captures the window bounds, active sheet, zoom, scroll position, and selection, reloads the saved file in Excel, and restores your exact view. If you have unsaved manual edits in Excel, it refuses to overwrite so your work is never lost.
+- **Composable Tool Profiles (`M365_MCP_PROFILE`):** Trim the exposed toolset (e.g., `excel,compact`, `excel`, `word`, `word,powerpoint`) to cut schema token overhead by up to 60%+ on local LLMs (LM Studio / Bionic).
 - **Hardened for Modern macOS & Office for Mac:**
   - Verified on macOS (Apple Silicon) with **Microsoft Excel 16.115** and **Microsoft Word 16.115.1**.
   - Per-event-loop `asyncio.Lock` serialization around `osascript` calls prevents parallel AppleEvent races.
@@ -70,12 +70,13 @@ This server combines **fast file-level manipulation** (`openpyxl`, `python-docx`
 - Insert text, images, and speaker notes
 - Save presentations in multiple formats
 
-### Finance Skills *(Work in Progress)*
-Ready-to-use, pure-Markdown (**3–4 KB** each) **IFRS / FASB / SOX-compliant Finance Skills** live in [`skills/`](skills/) so non-technical finance professionals can run complex workflows in plain English:
-- **Wall Street Formatter** (`wall-street-formatter`) · **Model Auditor** (`model-auditor`) · **Live What-If Runner** (`live-what-if-runner`)
-- **3-Statement Projector** (`three-statement-projector`) · **CapEx Project Analyzer** (`capex-project-analyzer`) · **DCF & Valuation Template Builder** (`dcf-investment-template-builder`) · **Boardroom Brief Generator** (`boardroom-brief-generator`)
+### Finance Skills *(Work in Progress — EN / FR / ES Natural Language)*
+9 ready-to-use, pure-Markdown (**2.5–4.0 KB** each) **IFRS / FASB / SOX-compliant Finance Skills** live in [`skills/`](skills/) so non-technical finance professionals can run complex workflows in plain English, French, or Spanish:
+- **Financial Statement Extractor** (`financial-statement-extractor`) · **Historical 3-Statement Rebuilder** (`historical-3stmt-rebuilder`) · **Wall Street Formatter** (`wall-street-formatter`)
+- **Model Auditor** (`model-auditor`) · **Live What-If Runner** (`live-what-if-runner`) · **3-Statement Projector** (`three-statement-projector`)
+- **CapEx Project Analyzer** (`capex-project-analyzer`) · **DCF & Valuation Template Builder** (`dcf-investment-template-builder`) · **Boardroom Brief Generator** (`boardroom-brief-generator`)
 
-> **Full Installation & Plain-English Usage Guide (WIP):** See [**`skills/README.md`**](skills/README.md).
+> **Full Installation & Consecutive Pipeline Guide (WIP):** See [**`skills/README.md`**](skills/README.md).
 
 ---
 
@@ -98,17 +99,17 @@ This server was developed, benchmarked, and end-to-end verified on the following
 | **MCP Client & Runtime** | **Bionic `1.2.1+10`** + **LM Studio** (local inference) |
 | **Local Inference Model** | **`Qwen3.6 35B A3B — Q8_0`** (Context `65536`, GPU Offload `40`, CPU Threads `6`, Eval Batch `2048`, Phys Batch `512`, Flash Attention `ON`, Temp `0.3`, Reasoning Budget `2048`, Preserve Thinking `OFF`, Unified + GPU KV Cache `ON`, Top-K `20`, Top-P `0.95`, Min-P `0.05`, Repeat Penalty `1.1`, Experts `8`) — see [`Sample Model Config/`](Sample%20Model%20Config/) |
 | **Python Environment** | Python `3.12.16` (`.venv`), `mcp` `2.3.0`, `openpyxl` `3.1.5`, `python-docx` `1.2.0` |
-| **Recommended MCP Env** | `OFFICE_MCP_PROFILE=EXCEL,COMPACT` (or `EXCEL`), `OFFICE_MCP_LIVE_SYNC=AUTO`, `OFFICE_MCP_FORMULA_GUARD=LITERALS_ONLY`, `OFFICE365_MCP_APPLESCRIPT_TIMEOUT=30` |
+| **Recommended MCP Env** | `M365_MCP_PROFILE=EXCEL,COMPACT` (or `EXCEL`), `M365_MCP_LIVE_SYNC=AUTO`, `M365_MCP_FORMULA_GUARD=LITERALS_ONLY`, `M365_MCP_APPLESCRIPT_TIMEOUT=30` |
 
 ### Hardware Tier & MCP Profile Quick Summary
 
 | Apple Silicon Tier | Best Local Model (LM Studio / MLX) | Recommended Profile | Safe Context | Expected Speed & Risk |
 | --- | --- | --- | --- | --- |
 | **16 GB M4** | `Qwen3.5-9B` *(MLX 4/6-bit)* or `Qwen3-14B` *(4-bit, tight ctx)* | `EXCEL,COMPACT` *(25 tools, ~2.4K tok)* | `12K–16K` *(Q8 KV)* | ~20–32 tok/s; use 2-phase chunking on big builds |
-| **32 GB M4 / M4 Pro** | `Qwen3.6 35B A3B` *(MLX/GGUF 4-bit)* or `gpt-oss-20b` | `EXCEL,COMPACT` or `EXCEL` | `32K` *(Q8 KV)* | ~20–30+ tok/s; all 7 skills in 1 shot, low risk |
+| **32 GB M4 / M4 Pro** | `Qwen3.6 35B A3B` *(MLX/GGUF 4-bit)* or `gpt-oss-20b` | `EXCEL,COMPACT` or `EXCEL` | `32K` *(Q8 KV)* | ~20–30+ tok/s; all 9 skills in 1 shot, low risk |
 | **64 GB M4 Pro / Max** | `Qwen3.6 35B A3B — Q8_0` *(verified reference)* | `EXCEL,COMPACT` or `FULL` *(82 tools)* | `65K–128K` | ~18–26 tok/s (Pro) / 35–50+ (Max); very low risk |
 
-> **Full Hardware, Local Model & `OFFICE_MCP_PROFILE` Decision Guide:** See [**`docs/HARDWARE_AND_PROFILE_GUIDE.md`**](docs/HARDWARE_AND_PROFILE_GUIDE.md).
+> **Full Hardware, Local Model & `M365_MCP_PROFILE` Decision Guide:** See [**`docs/HARDWARE_AND_PROFILE_GUIDE.md`**](docs/HARDWARE_AND_PROFILE_GUIDE.md).
 
 ### Installation
 
@@ -153,21 +154,21 @@ This server was developed, benchmarked, and end-to-end verified on the following
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `OFFICE_MCP_PROFILE` | `full` | Comma-separated, case-insensitive tool profile filter (see table below). |
-| `OFFICE_MCP_LIVE_SYNC` | `auto` | `auto` (reloads open saved Excel workbooks with view restore on `save_workbook`) or `off`. |
-| `OFFICE_MCP_FORMULA_GUARD` | `literals_only` | Protects existing Excel formulas from accidental overwrites: `literals_only` (default), `strict`, or `off`. |
-| `OFFICE365_MCP_LOG_LEVEL` | `INFO` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`). All logs go to `stderr`. |
-| `OFFICE365_MCP_APPLESCRIPT_TIMEOUT` | `30.0` | Timeout in seconds for each `osascript` call. |
-| `OFFICE365_MCP_ENABLE_APPLESCRIPT` | `true` | Enable or disable AppleScript bridge (`true`/`false`). |
-| `OFFICE365_MCP_TEMP_DIR` | `/tmp/office365_mcp` | Temporary directory for intermediate/unnamed files. |
+| `M365_MCP_PROFILE` | `full` | Comma-separated, case-insensitive tool profile filter (see table below). *(Legacy `OFFICE_MCP_PROFILE` also accepted.)* |
+| `M365_MCP_LIVE_SYNC` | `auto` | `auto` (reloads open saved Excel workbooks with view restore on `save_workbook`) or `off`. *(Legacy `OFFICE_MCP_LIVE_SYNC` also accepted.)* |
+| `M365_MCP_FORMULA_GUARD` | `literals_only` | Protects existing Excel formulas from accidental overwrites: `literals_only` (default), `strict`, or `off`. *(Legacy `OFFICE_MCP_FORMULA_GUARD` also accepted.)* |
+| `M365_MCP_LOG_LEVEL` | `INFO` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`). All logs go to `stderr`. *(Legacy `OFFICE365_MCP_LOG_LEVEL` also accepted.)* |
+| `M365_MCP_APPLESCRIPT_TIMEOUT` | `30.0` | Timeout in seconds for each `osascript` call. *(Legacy `OFFICE365_MCP_APPLESCRIPT_TIMEOUT` also accepted.)* |
+| `M365_MCP_ENABLE_APPLESCRIPT` | `true` | Enable or disable AppleScript bridge (`true`/`false`). *(Legacy `OFFICE365_MCP_ENABLE_APPLESCRIPT` also accepted.)* |
+| `M365_MCP_TEMP_DIR` | `/tmp/m365-mac-mcp` | Temporary directory for intermediate/unnamed files. *(Legacy `OFFICE365_MCP_TEMP_DIR` also accepted.)* |
 
-### Tool Profiles (`OFFICE_MCP_PROFILE`)
+### Tool Profiles (`M365_MCP_PROFILE`)
 
-To keep context usage low and tool selection fast on local models (such as LM Studio / Bionic), set `OFFICE_MCP_PROFILE` to expose only the apps you need:
+To keep context usage low and tool selection fast on local models (such as LM Studio / Bionic), set `M365_MCP_PROFILE` to expose only the apps you need:
 
-| `OFFICE_MCP_PROFILE` | Tools | Est. Schema Tokens | Best For |
+| `M365_MCP_PROFILE` | Tools | Est. Schema Tokens | Best For |
 | --- | --- | --- | --- |
-| `excel,compact` | 25 | ~2.4K | **Recommended** for daily Excel modeling, live recalc & all 6 Excel Finance Skills on local models |
+| `excel,compact` | 25 | ~2.4K | **Recommended** for daily Excel modeling, live recalc & all 8 Excel Finance Skills on local models |
 | `excel` | 50 | ~4.8K | Full Excel toolset (all single-op + batch tools, views, cell styles) |
 | `word` | 26 | ~2.2K | Word-only document creation, styling, and live automation |
 | `powerpoint` | 8 | ~0.5K | PowerPoint-only slide decks |
@@ -178,18 +179,18 @@ To keep context usage low and tool selection fast on local models (such as LM St
 
 - Values are **case-insensitive** (`EXCEL,COMPACT`, `Excel,Compact`, `excel,compact`, or `XLS,Compact` are equivalent) and accept any comma-separated combination of `excel` (`xls`/`xlsx`), `word` (`doc`/`docx`), `powerpoint` (`ppt`/`pptx`), and `compact`.
 - Unknown values log a warning to `stderr` and fall back safely to `full`.
-- Call `check_office_status` (or read `office365://status`) at any time to inspect the active profile, registered tool count, `live_sync_mode`, and `formula_guard_mode`.
+- Call `check_office_status` (or read `m365-mac-mcp://status`) at any time to inspect the active profile, registered tool count, `live_sync_mode`, and `formula_guard_mode`.
 
-### Live Excel Auto-Sync (`OFFICE_MCP_LIVE_SYNC`)
+### Live Excel Auto-Sync (`M365_MCP_LIVE_SYNC`)
 
 Controls how `save_workbook` behaves when the target `.xlsx`/`.xlsm` file is already open in Microsoft Excel (case-insensitive: `auto` or `off`):
 
 - **`auto` *(default)*:** If the file is open in Excel with **no unsaved changes**, captures the window position/size, active sheet, zoom, scroll offset, and selection → closes Excel → writes via `openpyxl` → reopens in Excel and restores the exact view. If the file has **unsaved manual edits** in Excel, refuses to overwrite and returns a clear warning so your edits are never lost.
 - **`off`:** Never checks or touches live Excel during `save_workbook`.
 
-> **Note on `excel_live_close`:** `OFFICE_MCP_LIVE_SYNC=auto` applies to file-level `save_workbook`. If you explicitly call `excel_live_close`, Excel will close the workbook and leave it closed—simply omit `excel_live_close` if you want the workbook to stay open in Excel.
+> **Note on `excel_live_close`:** `M365_MCP_LIVE_SYNC=auto` applies to file-level `save_workbook`. If you explicitly call `excel_live_close`, Excel will close the workbook and leave it closed—simply omit `excel_live_close` if you want the workbook to stay open in Excel.
 
-### Formula Overwrite Guard (`OFFICE_MCP_FORMULA_GUARD`)
+### Formula Overwrite Guard (`M365_MCP_FORMULA_GUARD`)
 
 Prevents AI models from silently destroying live Excel formulas across all 6 write tools (`write_cell`, `write_range`, `batch_write_ranges`, `excel_live_write_cell`, `excel_live_write_range`, `excel_live_batch_write_cells`). Values are case-insensitive:
 
@@ -204,20 +205,20 @@ Prevents AI models from silently destroying live Excel formulas across all 6 wri
 #### For Bionic / LM Studio (Recommended Local-Model Setup)
 
 Register two entries pointing to the same server `.venv`:
-1. **`Microsoft 365 for Mac MCP` (Excel)** — always enabled:
+1. **`m365-mac-mcp` (Excel)** — always enabled:
    - **Command:** `/path/to/m365-mac-mcp/.venv/bin/python`
-   - **Args:** `["/path/to/m365-mac-mcp/src/office365_mcp_server.py"]`
-   - **Env:** `OFFICE_MCP_PROFILE=excel` (or `excel,compact`), `OFFICE_MCP_LIVE_SYNC=auto`
-   - **Description:** `Microsoft 365 for Mac MCP (Excel/Office) for reading, editing, formatting, auditing, and live recalculating .xlsx/.xlsm workbooks.`
-2. **`M365 Word & PPT MCP`** — set to **Hide from agent unless mentioned** so it uses zero context until you `@`-mention it:
-   - **Env:** `OFFICE_MCP_PROFILE=word,powerpoint`
+   - **Args:** `["/path/to/m365-mac-mcp/src/m365_mac_mcp_server.py"]`
+   - **Env:** `M365_MCP_PROFILE=excel,compact` (or `excel`), `M365_MCP_LIVE_SYNC=auto`, `M365_MCP_FORMULA_GUARD=literals_only`
+   - **Description:** `m365-mac-mcp (Excel) for reading, editing, formatting, auditing, and live recalculating .xlsx/.xlsm workbooks.`
+2. **`m365-mac-mcp` (Word & PPT)** — set to **Hide from agent unless mentioned** so it uses zero context until you `@`-mention it:
+   - **Env:** `M365_MCP_PROFILE=word,powerpoint`
 
 **Recommended LM Studio / Bionic settings for `Qwen3.6 35B A3B — Q8_0` (full screenshots & system prompt in [`Sample Model Config/`](Sample%20Model%20Config/)):**
 - **Context & Performance:** `Context Length = 65536`, `GPU Offload = 40`, `CPU Thread Pool Size = 6`, `Evaluation Batch Size = 2048`, `Physical Batch Size = 512`, `Max Concurrent Predictions = 1`, `Flash Attention = ON`
 - **Generation & Reasoning:** `Temperature = 0.3`, `Context Overflow = Stop at Limit`, `Reasoning Budget = 2048` (`"I have to answer now."`), `Preserve Thinking = OFF`
 - **Memory:** `Offload KV Cache to GPU = ON`, `Unified KV Cache = ON`, `Context Checkpoints = 32`, `Keep Model in Memory = ON`, `Try mmap() = ON`, `Speculative Decoding = Off`
 - **Sampling:** `Top K = 20`, `Top P = 0.95`, `Min P = 0.05`, `Repeat Penalty = 1.1`, `Number of Experts = 8`
-- **System Prompt:** Copy [`Sample Model Config/SYSTEM_PROMPT.md`](Sample%20Model%20Config/SYSTEM_PROMPT.md) (`UNIVERSAL STERLING ENGINE V3.4 — FINANCE & M365 SPECIALIST`) into Bionic/LM Studio's System Prompt so the agent stays concise, avoids tool loops, blocks Bionic's built-in Office/shell bypasses, respects `OFFICE_MCP_FORMULA_GUARD`, and uses your custom Finance `skills/` cleanly.
+- **System Prompt:** Copy [`Sample Model Config/SYSTEM_PROMPT.md`](Sample%20Model%20Config/SYSTEM_PROMPT.md) (`UNIVERSAL STERLING ENGINE V3.4 — FINANCE & M365 SPECIALIST`) into Bionic/LM Studio's System Prompt so the agent stays concise, avoids tool loops, blocks Bionic's built-in Office/shell bypasses, respects `M365_MCP_FORMULA_GUARD`, and uses your custom Finance `skills/` cleanly.
   > **Disclosure:** Applying `Sample Model Config/SYSTEM_PROMPT.md` **highly customizes the model for financial modeling, corporate valuation, Excel/VBA, and Microsoft 365 work only**. If you also use Bionic / LM Studio for general chat or non-finance coding, apply this prompt inside a dedicated Finance Project rather than as your global default.
 
 #### For Claude Desktop
@@ -228,10 +229,10 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
   "mcpServers": {
     "m365-mac-mcp": {
       "command": "/path/to/m365-mac-mcp/.venv/bin/python",
-      "args": ["/path/to/m365-mac-mcp/src/office365_mcp_server.py"],
+      "args": ["/path/to/m365-mac-mcp/src/m365_mac_mcp_server.py"],
       "env": {
-        "OFFICE_MCP_PROFILE": "full",
-        "OFFICE_MCP_LIVE_SYNC": "auto"
+        "M365_MCP_PROFILE": "full",
+        "M365_MCP_LIVE_SYNC": "auto"
       }
     }
   }
@@ -246,10 +247,10 @@ Edit your Cline MCP settings:
   "mcpServers": {
     "m365-mac-mcp": {
       "command": "/path/to/m365-mac-mcp/.venv/bin/python",
-      "args": ["/path/to/m365-mac-mcp/src/office365_mcp_server.py"],
+      "args": ["/path/to/m365-mac-mcp/src/m365_mac_mcp_server.py"],
       "env": {
-        "OFFICE_MCP_PROFILE": "excel,word",
-        "OFFICE_MCP_LIVE_SYNC": "auto"
+        "M365_MCP_PROFILE": "excel,word",
+        "M365_MCP_LIVE_SYNC": "auto"
       }
     }
   }
@@ -304,7 +305,7 @@ Edit your Cline MCP settings:
 
 ### Utility & MCP Resources (1 Tool + 1 Resource)
 - `check_office_status` — Reports installed Office apps, active profile, registered tool count, and `live_sync_mode`.
-- `office365://status` — Read-only MCP resource returning the same server status payload.
+- `m365-mac-mcp://status` — Read-only MCP resource returning the same server status payload.
 
 ---
 
@@ -407,10 +408,10 @@ Run the unit and integration test suite with the project virtual environment:
 .venv/bin/pytest tests/test_basic.py tests/test_word_excel_rw.py -v
 ```
 
-This runs **29 tests** covering:
-- Excel file-level read/write, batch formatting, named styles, tables, data validation, formula sheet-reference auto-quoting & auditing, `OFFICE_MCP_FORMULA_GUARD` (`literals_only`/`strict`/`off`), and `OFFICE_MCP_LIVE_SYNC` view-restore / unsaved-edits protection.
+This runs **30 tests** covering:
+- Excel file-level read/write, batch formatting, named styles, tables, data validation, formula sheet-reference auto-quoting & auditing, `M365_MCP_FORMULA_GUARD` (`literals_only`/`strict`/`off`), and `M365_MCP_LIVE_SYNC` view-restore / unsaved-edits protection.
 - Word file-level creation, rich paragraph/table styling, search & replace, and `.docx` XML attributes (`w:tblHeader`, borders, shading, widths).
-- Composable `OFFICE_MCP_PROFILE` filtering, compact JSON responses, stripped schema noise, sparse A1 formula maps, trimmed blank cells, and automated validation of all 7 Finance `skills/*/SKILL.md` playbooks.
+- Composable `M365_MCP_PROFILE` filtering, compact JSON responses, stripped schema noise, sparse A1 formula maps, trimmed blank cells, legacy `OFFICE_MCP_*` / `office365_mcp_server.py` backwards compatibility, and automated validation of all 9 Finance `skills/*/SKILL.md` playbooks.
 - Hardened AppleScript generation and parsing for Excel `16.115` and Word `16.115.1`.
 
 ---
@@ -427,7 +428,7 @@ This runs **29 tests** covering:
 - `create_workbook(..., open_in_excel=True)` and `create_document(..., open_in_word=True)` automatically skip opening unnamed `/tmp` UUID files to avoid macOS sandbox **Grant Access** prompts; save the file to a normal folder (like `~/Desktop` or your workspace) before opening in the live app.
 
 ### Formula Cells Show `null` After `save_workbook`
-- File-level `openpyxl` writes formulas to disk without running Excel's calculation engine, so cached evaluated values are empty until Excel recalculates them. Use `excel_live_open` + `excel_live_read_range` (or `OFFICE_MCP_LIVE_SYNC=auto` with the file open in Excel) to evaluate and read live calculated values.
+- File-level `openpyxl` writes formulas to disk without running Excel's calculation engine, so cached evaluated values are empty until Excel recalculates them. Use `excel_live_open` + `excel_live_read_range` (or `M365_MCP_LIVE_SYNC=auto` with the file open in Excel) to evaluate and read live calculated values.
 
 ### Import / Environment Errors
 - Ensure your MCP client config points directly to `.venv/bin/python` rather than system `python3`.
@@ -440,7 +441,8 @@ This runs **29 tests** covering:
 ```text
 m365-mac-mcp/
 ├── src/
-│   ├── office365_mcp_server.py       # Main MCP server, tool registration & profiles
+│   ├── m365_mac_mcp_server.py        # Main MCP server, tool registration & profiles
+│   ├── office365_mcp_server.py       # Backwards-compatible deprecation shim
 │   ├── controllers/
 │   │   ├── excel_controller.py       # File-level Excel (openpyxl) + live auto-sync
 │   │   ├── word_controller.py        # File-level Word (python-docx) + rich styling
@@ -456,15 +458,17 @@ m365-mac-mcp/
 │   └── test_word_excel_rw.py
 ├── docs/
 │   ├── EXECUTIVE_COMPARISON_MATRIX.md          # Standalone 16GB/32GB/64GB M4 comparison matrix
-│   └── HARDWARE_AND_PROFILE_GUIDE.md           # 16GB/32GB/64GB M4 model & OFFICE_MCP_PROFILE guide
+│   └── HARDWARE_AND_PROFILE_GUIDE.md           # 16GB/32GB/64GB M4 model & M365_MCP_PROFILE guide
 ├── Sample Model Config/
 │   ├── SYSTEM_PROMPT.md                        # Recommended Bionic/LM Studio system prompt
 │   ├── bionic_mcp_config_part1.jpg             # Bionic MCP server setup (Connection, Command, Args)
 │   ├── bionic_mcp_config_part2.jpg             # Bionic MCP server setup (Env vars, Working dir)
 │   ├── qwen3.6_35b_a3b_q8_0_config_part1.png   # LM Studio model config (Prompt, Context, Reasoning)
 │   └── qwen3.6_35b_a3b_q8_0_config_part2.png   # LM Studio model config (Memory, Sampling, Advanced)
-├── skills/                                     # Ready-to-use Finance Skills (SKILL.md) — see skills/README.md
+├── skills/                                     # 9 Ready-to-use Finance Skills (SKILL.md) — see skills/README.md
 │   ├── README.md
+│   ├── financial-statement-extractor/SKILL.md
+│   ├── historical-3stmt-rebuilder/SKILL.md
 │   ├── wall-street-formatter/SKILL.md
 │   ├── model-auditor/SKILL.md
 │   ├── live-what-if-runner/SKILL.md

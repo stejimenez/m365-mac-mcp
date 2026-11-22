@@ -1,6 +1,6 @@
 ---
 name: wall-street-formatter
-description: Format Excel financial statements Wall Street style (colors, borders, formats, widths) via Office MCP without altering values.
+description: Format Excel financial statements Wall Street style (colors, borders, formats, widths) via m365-mac-mcp without altering values.
 ---
 
 # Wall Street Financial Model Formatter
@@ -13,7 +13,7 @@ description: Format Excel financial statements Wall Street style (colors, border
 - Target file path — if the user says *"the workbook I have open"*, call `excel_live_list_workbooks()` to get its path automatically (do not force the user to type a path).
 - Currency symbol/scale (default `$#,##0;($#,##0);"-"` if USD; proceed without halting).
 
-## 3. Exact Office MCP Tool Sequence
+## 3. Exact m365-mac-mcp Tool Sequence
 1. **Inspect Once:** Call `inspect_workbook(file_path=...)` to map headers, used range, currency rows, percentage/margin/CAGR ranges, multiples, and subtotals/totals.
 2. **Open:** Call `open_workbook(file_path=...)` if not already loaded.
 3. **Single Batch Format:** Call `batch_format_workbook(workbook_id=..., operations=[...])` across all tabs:
@@ -24,7 +24,7 @@ description: Format Excel financial statements Wall Street style (colors, border
    - **Percentage / Margin / CAGR:** `number_format: "0.0%"` across the **entire** contiguous range (e.g., `B5:G5`, `G2:G16`—never stop one column short).
    - **Multiples:** `number_format: '0.0"x"'`.
    - **Subtotals / Totals:** `bold: True`, `bg_color: "#D9E1F2"`, `border: {"top": "thin", "bottom": "double"}` (`thin`/`thin` for intermediate subtotals).
-4. **Save & Close:** Call `save_workbook(workbook_id=...)` (auto-syncs open Excel window via `OFFICE_MCP_LIVE_SYNC=auto`) and `close_workbook(workbook_id=...)`.
+4. **Save & Close:** Call `save_workbook(workbook_id=...)` (auto-syncs open Excel window via `M365_MCP_LIVE_SYNC=auto`) and `close_workbook(workbook_id=...)`.
 
 ## 4. Accounting (IFRS / FASB), SOX & Formula Guardrails
 - **SOX 404 Zero-Mutation:** Formatting-only runs MUST NEVER change any value, formula, or line classification.
@@ -32,4 +32,4 @@ description: Format Excel financial statements Wall Street style (colors, border
 - Check `batch_format_workbook` `"warnings"` before saving.
 
 ## 5. Verification & Output Gate
-Confirm `audit_workbook_formulas(file_path=...)` returns `clean: true` and `external_links_count: 0`, then output ONLY a compact Markdown table of sheets formatted, ranges styled, and number formats applied.
+Confirm `audit_workbook_formulas(file_path=...)` returns `clean: true` and `external_links_count: 0`, then output ONLY a compact Markdown table (in plain finance language, never mentioning internal tool/skill names) of sheets formatted, ranges styled, and number formats applied.

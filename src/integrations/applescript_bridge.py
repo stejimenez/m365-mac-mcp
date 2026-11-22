@@ -1484,14 +1484,25 @@ class AppleScriptBridge:
 
         return formula
 
-    @staticmethod
-    def get_formula_guard_mode(raw: Optional[str] = None) -> str:
-        """Parse OFFICE_MCP_FORMULA_GUARD ('literals_only' default | 'strict' | 'off'), case-insensitive."""
-        val = (
-            os.environ.get("OFFICE_MCP_FORMULA_GUARD", "literals_only")
-            if raw is None
-            else raw
-        ).strip().lower()
+    _warned_legacy_formula_guard: bool = False
+
+    @classmethod
+    def get_formula_guard_mode(cls, raw: Optional[str] = None) -> str:
+        """Parse M365_MCP_FORMULA_GUARD (or legacy OFFICE_MCP_FORMULA_GUARD): 'literals_only' (default) | 'strict' | 'off'."""
+        if raw is None:
+            env_val = os.environ.get("M365_MCP_FORMULA_GUARD")
+            if env_val is None or not env_val.strip():
+                legacy = os.environ.get("OFFICE_MCP_FORMULA_GUARD")
+                if legacy is not None and legacy.strip():
+                    if not cls._warned_legacy_formula_guard:
+                        logger.warning(
+                            "OFFICE_MCP_FORMULA_GUARD is deprecated; rename it to M365_MCP_FORMULA_GUARD."
+                        )
+                        cls._warned_legacy_formula_guard = True
+                    env_val = legacy
+            val = (env_val or "literals_only").strip().lower()
+        else:
+            val = raw.strip().lower()
         if not val or val in ("literals_only", "literals", "literal", "default"):
             return "literals_only"
         if val in ("strict", "all", "on"):

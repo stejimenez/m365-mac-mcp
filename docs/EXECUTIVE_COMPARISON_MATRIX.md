@@ -18,4 +18,4 @@
 
 ---
 
-For the full tier-by-tier breakdown and all 8 `OFFICE_MCP_PROFILE` benchmarks, see [`HARDWARE_AND_PROFILE_GUIDE.md`](HARDWARE_AND_PROFILE_GUIDE.md).
+For the full tier-by-tier breakdown and all 8 `M365_MCP_PROFILE` benchmarks, see [`HARDWARE_AND_PROFILE_GUIDE.md`](HARDWARE_AND_PROFILE_GUIDE.md).

@@ -22,10 +22,10 @@ Thank you for your interest in contributing to **Microsoft 365 for Mac MCP** (`m
 
 - Follow PEP 8 Python style guidelines and include type hints on all public functions and methods.
 - **Never write to `stdout`** — MCP uses `stdio` JSON-RPC; all logging must go through `utils.logger.setup_logger` (`stderr` only).
-- **Register tools with `@_tool(app=..., compact=...)`** in `src/office365_mcp_server.py` so `OFFICE_MCP_PROFILE`, compact JSON serialization, and schema compaction apply automatically.
+- **Register tools with `@_tool(app=..., compact=...)`** in `src/m365_mac_mcp_server.py` so `M365_MCP_PROFILE`, compact JSON serialization, and schema compaction apply automatically.
 - **Keep AppleScript calls safe:** Always pass user inputs via `osascript -` + `argv` (never string interpolation) and respect the per-event-loop `asyncio.Lock` and timeouts in `src/integrations/applescript_bridge.py`.
 - Keep tool docstrings concise and include key-name guides for structured dict arguments.
-- **Finance Skills (`skills/*/SKILL.md`):** Keep each skill pure Markdown (**2–4 KB**), structured with the 5-block blueprint (`## 1.`–`## 5.`), IFRS/FASB/SOX compliant, and referencing only registered `m365-mac-mcp` tool/parameter names (validated automatically by `pytest`).
+- **Finance Skills (`skills/*/SKILL.md`):** Keep each skill pure Markdown (**2–4 KB**), structured with the 5-block blueprint (`## 1.`–`## 5.`), IFRS/FASB/SOX compliant, token/loop-optimized, referencing only registered `m365-mac-mcp` tool/parameter names (validated automatically by `pytest`), and strictly **finance-native in user-facing output** (assume the user knows finance, never internal MCP tools, skill slugs, or code internals).
 
 ## Testing
 

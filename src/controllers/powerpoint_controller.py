@@ -31,7 +31,7 @@ class PowerPointController:
         self.applescript = AppleScriptBridge()
         self.active_presentations: Dict[str, Dict[str, Any]] = {}
         # Use system temp directory with a subdirectory
-        self.temp_dir = Path(tempfile.gettempdir()) / "office365_mcp"
+        self.temp_dir = Path(tempfile.gettempdir()) / "m365-mac-mcp"
         self.temp_dir.mkdir(parents=True, exist_ok=True)
     
     async def create_presentation(

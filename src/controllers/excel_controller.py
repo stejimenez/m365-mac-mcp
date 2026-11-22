@@ -126,7 +126,7 @@ class ExcelController:
         self.applescript = AppleScriptBridge()
         self.active_workbooks: Dict[str, Dict[str, Any]] = {}
         self.max_workbooks = max_workbooks
-        self.temp_dir = Path(tempfile.gettempdir()) / "office365_mcp" / "excel"
+        self.temp_dir = Path(tempfile.gettempdir()) / "m365-mac-mcp" / "excel"
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         self._owned_temp_files: set[Path] = set()
         atexit.register(self._cleanup_temp_files)
@@ -182,11 +182,19 @@ class ExcelController:
             )
         return wb[sheet_name]
 
-    async def _save_working_copy(self, entry: Dict[str, Any]) -> None:
-        """Persist working copy asynchronously without blocking the event loop."""
-        wb = entry["workbook_object"]
-        target = entry["working_path"]
-        await asyncio.to_thread(wb.save, str(target))
+    async def _save_working_copy(self, entry: Dict[str, Any], force: bool = False) -> None:
+        """Mark workbook dirty in memory; defer disk serialization until save_workbook unless force=True.
+
+        Deferring disk writes avoids redundant full-.xlsx zip writes on multi-step edits,
+        preserves original cached formula values on disk until explicit save, and ensures
+        save_workbook's M365_MCP_LIVE_SYNC unsaved-edits guard is never bypassed.
+        """
+        entry["dirty"] = True
+        if force:
+            wb = entry["workbook_object"]
+            target = entry["working_path"]
+            await asyncio.to_thread(wb.save, str(target))
+            entry["dirty"] = False
 
     def _sync_metadata(self, entry: Dict[str, Any]) -> None:
         wb = entry["workbook_object"]
@@ -273,6 +281,7 @@ class ExcelController:
             "workbook_object": wb,
             "working_path": temp_file,
             "temp_file": temp_file,
+            "dirty": False,
         }
         logger.info(f"Created workbook '{title}' ({workbook_id})")
         return sanitize_for_json(metadata)
@@ -330,6 +339,7 @@ class ExcelController:
             "workbook_object": wb,
             "working_path": working_path,
             "temp_file": temp_file,
+            "dirty": False,
         }
         logger.info(f"Opened workbook '{resolved}' ({workbook_id})")
         return sanitize_for_json(metadata)
@@ -366,8 +376,8 @@ class ExcelController:
         entry = self._get_entry(workbook_id)
         saved_path = None
         if save_before_close and not entry["metadata"].get("is_temporary", True):
-            await self._save_working_copy(entry)
-            saved_path = str(entry["working_path"])
+            save_res = await self.save_workbook(workbook_id)
+            saved_path = save_res.get("file_path") or str(entry["working_path"])
 
         self.active_workbooks.pop(workbook_id, None)
         try:
@@ -545,6 +555,7 @@ class ExcelController:
         cell_range: Optional[str] = None,
         evaluate_formulas: bool = False,
         max_rows: int = 500,
+        max_cols: int = 50,
     ) -> Dict[str, Any]:
         """Read a cell range (or used range) as a JSON-safe 2D matrix."""
         entry = self._get_entry(workbook_id)
@@ -567,6 +578,9 @@ class ExcelController:
         truncated = False
         if (max_row - min_row + 1) > max_rows:
             max_row = min_row + max_rows - 1
+            truncated = True
+        if (max_col - min_col + 1) > max_cols:
+            max_col = min_col + max_cols - 1
             truncated = True
 
         def _extract() -> List[List[Any]]:
@@ -598,7 +612,7 @@ class ExcelController:
             ]
 
         rows_data = await asyncio.to_thread(_extract)
-        if not cell_range and rows_data:
+        if rows_data:
             rows_data = self._trim_2d_grid(rows_data)
             if rows_data:
                 max_row = min_row + len(rows_data) - 1
@@ -692,12 +706,13 @@ class ExcelController:
         self,
         workbook_id: Optional[str] = None,
         file_path: Optional[str] = None,
+        sheet_names: Optional[List[str]] = None,
         max_rows_per_sheet: int = 50,
         max_cols_per_sheet: int = 20,
         include_formulas: bool = True,
         include_evaluated: bool = True,
     ) -> Dict[str, Any]:
-        """Inspect all worksheets (structure, headers, formulas, cached values, tables) in ONE read-only call."""
+        """Inspect all (or selected) worksheets (structure, headers, sparse formulas, cached values, tables) in ONE read-only call."""
         if not workbook_id and not file_path:
             raise ValueError("Provide either workbook_id or file_path to inspect_workbook")
 
@@ -719,8 +734,31 @@ class ExcelController:
                 except Exception:
                     wb_eval = None
             try:
+                target_sheets = list(wb.worksheets)
+                missing_sheets: List[str] = []
+                if sheet_names:
+                    requested = [str(s).strip() for s in sheet_names if str(s).strip()]
+                    if requested:
+                        exact_map = {ws.title: ws for ws in wb.worksheets}
+                        lower_map = {ws.title.strip().lower(): ws for ws in wb.worksheets}
+                        matched = []
+                        seen_titles: set[str] = set()
+                        for req in requested:
+                            ws_hit = exact_map.get(req) or lower_map.get(req.lower())
+                            if ws_hit is None:
+                                missing_sheets.append(req)
+                            elif ws_hit.title not in seen_titles:
+                                matched.append(ws_hit)
+                                seen_titles.add(ws_hit.title)
+                        if not matched:
+                            raise ValueError(
+                                f"None of the requested sheet_names {requested} matched. "
+                                f"Available sheets: {list(wb.sheetnames)}"
+                            )
+                        target_sheets = matched
+
                 sheets_out: List[Dict[str, Any]] = []
-                for ws in wb.worksheets:
+                for ws in target_sheets:
                     max_r = min(ws.max_row or 0, max_rows_per_sheet)
                     max_c = min(ws.max_column or 0, max_cols_per_sheet)
                     truncated_rows = (ws.max_row or 0) > max_rows_per_sheet
@@ -801,6 +839,10 @@ class ExcelController:
                     "sheet_names": list(wb.sheetnames),
                     "sheets": sheets_out,
                 }
+                if sheet_names:
+                    out["inspected_sheet_count"] = len(sheets_out)
+                if missing_sheets:
+                    out["missing_sheets"] = missing_sheets
                 if workbook_id:
                     out["workbook_id"] = workbook_id
                 if disk_path:
@@ -852,6 +894,44 @@ class ExcelController:
                 suspicious_literals: List[Dict[str, Any]] = []
                 total_formulas = 0
 
+                calc_row_keywords = (
+                    "total",
+                    "subtotal",
+                    "sub-total",
+                    "sous-total",
+                    "margin",
+                    "marge",
+                    "margen",
+                    "%",
+                    "ebitda",
+                    "ebit",
+                    "net income",
+                    "résultat net",
+                    "resultat net",
+                    "utilidad neta",
+                    "gross profit",
+                    "marge brute",
+                    "utilidad bruta",
+                    "operating income",
+                    "check",
+                    "cagr",
+                    "growth",
+                    "croissance",
+                    "crecimiento",
+                    "sum",
+                    "fcf",
+                    "free cash flow",
+                    "npv",
+                    "van",
+                    "irr",
+                    "tir",
+                    "mirr",
+                    "wacc",
+                    "eps",
+                    "ratio",
+                    "multiple",
+                )
+
                 for ws in wb.worksheets:
                     ws_e = wb_eval[ws.title] if (wb_eval is not None and ws.title in wb_eval.sheetnames) else None
                     eval_rows = (
@@ -863,7 +943,8 @@ class ExcelController:
                     max_r = ws.max_row or 0
                     max_c = ws.max_column or 0
                     col_formula_counts: Dict[int, int] = {}
-                    col_nonempty_cells: Dict[int, List[Tuple[int, Any]]] = {}
+                    row_formula_counts: Dict[int, int] = {}
+                    numeric_literals: List[Tuple[int, int, Any, Any]] = []
 
                     for r in range(1, max_r + 1):
                         row_label = ws.cell(row=r, column=1).value
@@ -880,13 +961,14 @@ class ExcelController:
                             if is_fml:
                                 total_formulas += 1
                                 col_formula_counts[c] = col_formula_counts.get(c, 0) + 1
+                                row_formula_counts[r] = row_formula_counts.get(r, 0) + 1
                                 sheet_ref_warnings.extend(
                                     self._inspect_formula_sheet_refs(
                                         wb, val, cell_ref=f"{ws.title}!{coord}"
                                     )
                                 )
-                            elif val is not None and r > 1:
-                                col_nonempty_cells.setdefault(c, []).append((r, val))
+                            elif r > 1 and c > 1 and isinstance(val, (int, float)) and not isinstance(val, bool):
+                                numeric_literals.append((r, c, val, row_label))
 
                             # Detect Excel error tokens in either formula text or cached value
                             err_hit = None
@@ -914,20 +996,32 @@ class ExcelController:
                                     "reason": "Literal quote characters ('\"\"') instead of empty cell or formula",
                                 })
 
-                    # Flag hardcoded literals sitting inside predominantly-formula columns (>= 3 formulas)
-                    for c, f_count in col_formula_counts.items():
-                        if f_count >= 3:
-                            for r, lit_val in col_nonempty_cells.get(c, []):
-                                if isinstance(lit_val, str) and lit_val.strip() == '""':
-                                    continue  # already flagged above
-                                coord = f"{get_column_letter(c)}{r}"
-                                suspicious_literals.append({
-                                    "sheet_name": ws.title,
-                                    "cell": coord,
-                                    "row_label": ws.cell(row=r, column=1).value,
-                                    "value": lit_val,
-                                    "reason": f"Non-formula value in formula column {get_column_letter(c)} ({f_count} formulas in column)",
-                                })
+                    # High-precision SOX 404 literal check (avoids false positives on historical input rows):
+                    # 1. Horizontal formula-row break: same row has >=2 formulas in sibling columns.
+                    # 2. Calculated-row label (Total/Subtotal/Margin/EBITDA/Check/etc.) hardcoded in a formula column (>=3 formulas).
+                    for r, c, lit_val, row_label in numeric_literals:
+                        row_f = row_formula_counts.get(r, 0)
+                        col_f = col_formula_counts.get(c, 0)
+                        label_low = str(row_label or "").strip().lower()
+                        is_calc_label = bool(label_low) and any(kw in label_low for kw in calc_row_keywords)
+                        if row_f >= 2:
+                            coord = f"{get_column_letter(c)}{r}"
+                            suspicious_literals.append({
+                                "sheet_name": ws.title,
+                                "cell": coord,
+                                "row_label": row_label,
+                                "value": lit_val,
+                                "reason": f"Hardcoded number in formula row {r} ({row_f} sibling formulas in row)",
+                            })
+                        elif col_f >= 3 and is_calc_label:
+                            coord = f"{get_column_letter(c)}{r}"
+                            suspicious_literals.append({
+                                "sheet_name": ws.title,
+                                "cell": coord,
+                                "row_label": row_label,
+                                "value": lit_val,
+                                "reason": f"Hardcoded number on calculated row '{row_label}' in formula column {get_column_letter(c)}",
+                            })
 
                 ext_count = len(getattr(wb, "_external_links", []) or [])
                 audit_out: Dict[str, Any] = {
@@ -970,14 +1064,26 @@ class ExcelController:
     # Writing (Cells, Ranges, Formulas, Tables, Charts)
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def get_formula_guard_mode(raw: Optional[str] = None) -> str:
-        """Parse OFFICE_MCP_FORMULA_GUARD ('literals_only' default | 'strict' | 'off'), case-insensitive."""
-        val = (
-            os.environ.get("OFFICE_MCP_FORMULA_GUARD", "literals_only")
-            if raw is None
-            else raw
-        ).strip().lower()
+    _warned_legacy_formula_guard: bool = False
+    _warned_legacy_live_sync: bool = False
+
+    @classmethod
+    def get_formula_guard_mode(cls, raw: Optional[str] = None) -> str:
+        """Parse M365_MCP_FORMULA_GUARD (or legacy OFFICE_MCP_FORMULA_GUARD): 'literals_only' (default) | 'strict' | 'off'."""
+        if raw is None:
+            env_val = os.environ.get("M365_MCP_FORMULA_GUARD")
+            if env_val is None or not env_val.strip():
+                legacy = os.environ.get("OFFICE_MCP_FORMULA_GUARD")
+                if legacy is not None and legacy.strip():
+                    if not cls._warned_legacy_formula_guard:
+                        logger.warning(
+                            "OFFICE_MCP_FORMULA_GUARD is deprecated; rename it to M365_MCP_FORMULA_GUARD."
+                        )
+                        cls._warned_legacy_formula_guard = True
+                    env_val = legacy
+            val = (env_val or "literals_only").strip().lower()
+        else:
+            val = raw.strip().lower()
         if not val or val in ("literals_only", "literals", "literal", "default"):
             return "literals_only"
         if val in ("strict", "all", "on"):
@@ -985,7 +1091,7 @@ class ExcelController:
         if val in ("off", "false", "0", "no", "none", "disabled"):
             return "off"
         logger.warning(
-            f"Unknown OFFICE_MCP_FORMULA_GUARD='{val}'. Falling back to 'literals_only'. "
+            f"Unknown M365_MCP_FORMULA_GUARD='{val}'. Falling back to 'literals_only'. "
             "Valid values: literals_only, strict, off."
         )
         return "literals_only"
@@ -1269,6 +1375,7 @@ class ExcelController:
         formula: str,
         number_format: Optional[str] = None,
         formatting: Optional[Dict[str, Any]] = None,
+        allow_formula_overwrite: bool = False,
     ) -> Dict[str, Any]:
         """Write an Excel formula to a cell with optional number format."""
         entry = self._get_entry(workbook_id)
@@ -1283,6 +1390,20 @@ class ExcelController:
         formula_warnings = self._inspect_formula_sheet_refs(wb, normalized, cell_ref=clean_cell)
 
         cell_obj = ws[clean_cell]
+        existing_val = cell_obj.value
+        was_formula = isinstance(existing_val, str) and existing_val.startswith("=")
+        guard_mode = self.get_formula_guard_mode()
+        if was_formula and guard_mode == "strict" and not allow_formula_overwrite:
+            return self._formula_guard_response(
+                guard_mode,
+                [{
+                    "sheet_name": ws.title,
+                    "cell": clean_cell,
+                    "existing_formula": existing_val,
+                    "proposed_value": normalized,
+                }],
+            )
+
         cell_obj.value = normalized
         if number_format:
             cell_obj.number_format = number_format
@@ -1299,6 +1420,8 @@ class ExcelController:
             "formula": normalized,
             "number_format": cell_obj.number_format,
         }
+        if was_formula:
+            result["formulas_updated"] = 1
         if formula_warnings:
             result["formula_warnings"] = formula_warnings
         return sanitize_for_json(result)
@@ -1470,16 +1593,29 @@ class ExcelController:
     # Save / Export
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def get_live_sync_mode(raw: Optional[str] = None) -> str:
-        """Parse OFFICE_MCP_LIVE_SYNC ('auto' default | 'off'), case-insensitive."""
-        val = (os.environ.get("OFFICE_MCP_LIVE_SYNC", "auto") if raw is None else raw).strip().lower()
+    @classmethod
+    def get_live_sync_mode(cls, raw: Optional[str] = None) -> str:
+        """Parse M365_MCP_LIVE_SYNC (or legacy OFFICE_MCP_LIVE_SYNC): 'auto' (default) | 'off'."""
+        if raw is None:
+            env_val = os.environ.get("M365_MCP_LIVE_SYNC")
+            if env_val is None or not env_val.strip():
+                legacy = os.environ.get("OFFICE_MCP_LIVE_SYNC")
+                if legacy is not None and legacy.strip():
+                    if not cls._warned_legacy_live_sync:
+                        logger.warning(
+                            "OFFICE_MCP_LIVE_SYNC is deprecated; rename it to M365_MCP_LIVE_SYNC."
+                        )
+                        cls._warned_legacy_live_sync = True
+                    env_val = legacy
+            val = (env_val or "auto").strip().lower()
+        else:
+            val = raw.strip().lower()
         if not val or val in ("auto", "on", "true", "1", "yes"):
             return "auto"
         if val in ("off", "false", "0", "no", "none"):
             return "off"
         logger.warning(
-            f"Unknown OFFICE_MCP_LIVE_SYNC='{val}'. Falling back to 'auto'. Valid values: auto, off."
+            f"Unknown M365_MCP_LIVE_SYNC='{val}'. Falling back to 'auto'. Valid values: auto, off."
         )
         return "auto"
 
@@ -1552,6 +1688,7 @@ class ExcelController:
             entry["working_path"] = save_path
             entry["metadata"]["file_path"] = str(save_path)
             entry["metadata"]["is_temporary"] = False
+            entry["dirty"] = False
             logger.info(f"Saved workbook to {save_path}")
 
             if open_live_wb is not None:
@@ -1607,9 +1744,15 @@ class ExcelController:
             }
 
         if fmt == "pdf":
-            await self._save_working_copy(entry)
+            pdf_staging: Optional[Path] = None
+            source_for_pdf = Path(entry["working_path"])
+            if entry.get("dirty") or entry["metadata"].get("is_temporary", True) or not source_for_pdf.exists():
+                ext = ".xlsm" if entry["metadata"].get("keep_vba") else ".xlsx"
+                pdf_staging = self.temp_dir / f"pdf_stage_{uuid.uuid4()}{ext}"
+                await asyncio.to_thread(wb.save, str(pdf_staging))
+                source_for_pdf = pdf_staging
             open_res = await self.applescript.open_excel_file(
-                str(entry["working_path"]), read_only=True, activate=False
+                str(source_for_pdf), read_only=True, activate=False
             )
             live_name = open_res["workbook_name"]
             try:
@@ -1629,6 +1772,11 @@ class ExcelController:
                     )
                 except Exception:
                     pass
+                if pdf_staging and pdf_staging.exists():
+                    try:
+                        pdf_staging.unlink()
+                    except Exception:
+                        pass
             return {
                 "status": "success",
                 "workbook_id": workbook_id,

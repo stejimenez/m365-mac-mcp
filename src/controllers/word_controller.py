@@ -39,7 +39,7 @@ class WordController:
         self.applescript = AppleScriptBridge()
         self.active_documents: Dict[str, Dict[str, Any]] = {}
         self.max_documents = max_documents
-        self.temp_dir = Path(tempfile.gettempdir()) / "office365_mcp" / "word"
+        self.temp_dir = Path(tempfile.gettempdir()) / "m365-mac-mcp" / "word"
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         self._owned_temp_files: set[Path] = set()
         atexit.register(self._cleanup_temp_files)

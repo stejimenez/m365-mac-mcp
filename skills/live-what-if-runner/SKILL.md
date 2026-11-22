@@ -15,7 +15,7 @@ Confirm (ask concisely only if missing):
 - Driver input cell(s) and shock values/percentages (e.g., `Income Statement!F2` ±10%).
 - Output KPI cells to track (always include `Balance Check` if a 3-statement model).
 
-## 3. Exact Office MCP Tool Sequence
+## 3. Exact m365-mac-mcp Tool Sequence
 1. **Locate / Open Live:** Call `excel_live_list_workbooks()` or `excel_live_open(file_path=..., activate=True)`.
 2. **Capture Baseline (1 Call):** Call `excel_live_batch_read_ranges(workbook_name=..., ranges=[...], include_formulas=True)` covering all driver cells (verifying they are inputs, not formulas) and all output KPI cells.
 3. **Run Each Scenario:**
@@ -30,4 +30,4 @@ Confirm (ask concisely only if missing):
 - **Formula Guard:** If `confirmation_required` is returned, STOP—the targeted cell is a formula, not an input; ask which blue input cell to shock.
 
 ## 5. Verification & Output Gate
-Verify the reverted read equals baseline (`Delta = 0`), then output ONLY a compact Markdown table (`Sheet!Cell | Metric | Baseline | Scenario(s) | Delta | Reverted | Status`).
+Verify the reverted read equals baseline (`Delta = 0`), then output ONLY a compact Markdown table (`Sheet!Cell | Metric | Baseline | Scenario(s) | Delta | Reverted | Status`) in plain finance language (never mentioning internal tool/skill names).

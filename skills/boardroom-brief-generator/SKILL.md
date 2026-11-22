@@ -1,6 +1,6 @@
 ---
 name: boardroom-brief-generator
-description: Turn live-recalculated Excel KPIs into a SOX-traceable executive Word/PDF memo or PowerPoint deck via Office MCP.
+description: Turn live-recalculated Excel KPIs into a SOX-traceable executive Word/PDF memo or PowerPoint deck via m365-mac-mcp.
 ---
 
 # Boardroom Brief Generator (Excel → Word / PDF / PowerPoint)
@@ -13,9 +13,9 @@ description: Turn live-recalculated Excel KPIs into a SOX-traceable executive Wo
 Confirm concisely (if missing):
 - Source Excel workbook (or call `excel_live_list_workbooks()` if open) + desired format(s) (`.docx`, `.pdf`, `.pptx`) and save folder.
 - Reporting basis label (**IFRS** or **US GAAP / FASB**) and currency/units (`$M`).
-- Ensure the active MCP profile includes Word/PowerPoint (`OFFICE_MCP_PROFILE=EXCEL,WORD` or `FULL`, or `@`-mention the Word & PPT MCP server).
+- Ensure the active MCP profile includes Word/PowerPoint (`M365_MCP_PROFILE=EXCEL,WORD` or `FULL`, or `@`-mention your secondary `m365-mac-mcp` Word & PPT server).
 
-## 3. Exact Office MCP Tool Sequence
+## 3. Exact m365-mac-mcp Tool Sequence
 1. **Audit & Read Live Numbers:**
    - Call `audit_workbook_formulas(file_path=...)` to confirm the source model is clean.
    - Call `excel_live_open(file_path=...)` + `excel_live_batch_read_ranges` on all KPI/summary ranges so every number comes verbatim from live Microsoft Excel.
@@ -28,7 +28,7 @@ Confirm concisely (if missing):
    - Call `create_presentation(title=...)` → `add_slide` + `add_text_to_slide` + `add_speaker_notes` (3–5 slides) → `save_presentation`.
 
 ## 4. Accounting (IFRS / FASB), SOX & Formula Guardrails
-- **SOX Traceability:** Every figure MUST match Step 1's live Excel read verbatim—never extrapolate or round inconsistently. Note the source workbook filename and `audit_workbook_formulas` status in the memo footer.
+- **SOX Traceability:** Every figure MUST match Step 1's live Excel read verbatim—never extrapolate or round inconsistently. Note the source workbook filename and plain-English formula check status (e.g., *"Formula Audit: Passed — 0 errors, 0 external links"*) in the memo footer; never print internal tool or skill names.
 - **IFRS / FASB Disclosure:** Explicitly label accounting basis (IFRS vs. US GAAP), currency/units, and reconcile any non-GAAP metrics (Adjusted EBITDA, FCF) to GAAP/IFRS Net Income or CFO.
 
 ## 5. Verification & Output Gate
