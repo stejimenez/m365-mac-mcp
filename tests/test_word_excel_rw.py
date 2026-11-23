@@ -2195,5 +2195,16 @@ async def test_column_widths_list_table_header_guard_and_uncached_formula_warnin
             position="G1",
         )
         assert ch["status"] == "success"
+        # First column has text labels ("North", "South") -> 2 numeric series (Q1, Total), not 3
+        assert len(ws._charts[-1].series) == 2
+
+        # 9. Singular column_width + range alias in batch_format_workbook
+        bf_single_w = await server.batch_format_workbook(
+            workbook_id=wb_id,
+            operations=[{"sheet": "Sales", "range": "B:C", "column_width": 16}],
+        )
+        assert bf_single_w["status"] == "success"
+        assert ws.column_dimensions["B"].width == 16
+        assert ws.column_dimensions["C"].width == 16
     finally:
         await server.close_workbook(wb_id)

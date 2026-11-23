@@ -812,10 +812,11 @@ class WordController:
             }
 
         if fmt in ("pdf", "rtf", "txt", "doc"):
-            # Persist current docx first, then export cleanly via live Microsoft Word AppleScript
+            # Persist current docx first, then export cleanly via live Microsoft Word AppleScript.
+            # NOTE: Microsoft Word 16.x rejects `save as` on read_only=True documents.
             await self._save_working_copy(entry)
             open_res = await self.applescript.open_word_file(
-                str(entry["working_path"]), read_only=True, activate=False
+                str(entry["working_path"]), read_only=False, activate=False
             )
             live_name = open_res["document_name"]
             try:
@@ -983,9 +984,20 @@ class WordController:
 
         if column_widths:
             table.autofit = False
-            for c_idx, width_in in enumerate(column_widths):
-                if c_idx < len(table.columns):
-                    w = Inches(float(width_in))
+            numeric_widths = [float(v) for v in column_widths if v is not None and float(v) > 0]
+            max_w = max(numeric_widths) if numeric_widths else 0.0
+            # Universal unit guard: Word max page width is 22". LLMs often pass points (e.g. [120, 100, 80])
+            # or twips (e.g. [2400, 1800, 1400]) instead of inches; auto-convert so Word never overflows twips or fails PDF export.
+            if max_w > 500.0:
+                divisor = 1440.0  # twips -> inches
+            elif max_w > 15.0:
+                divisor = 72.0    # points -> inches
+            else:
+                divisor = 1.0     # already inches
+            for c_idx, width_raw in enumerate(column_widths):
+                if c_idx < len(table.columns) and width_raw is not None:
+                    width_in = max(0.3, min(10.0, float(width_raw) / divisor))
+                    w = Inches(width_in)
                     table.columns[c_idx].width = w
                     for row in table.rows:
                         row.cells[c_idx].width = w

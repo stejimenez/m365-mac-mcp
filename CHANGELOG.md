@@ -19,14 +19,19 @@ This project follows [Semantic Versioning (`MAJOR.MINOR.PATCH`)](https://semver.
   - `excel_live_*` timeouts now explicitly instruct stopping to let the user dismiss/approve any Excel modal or **Grant Access** dialog instead of suggesting file-level `read_range` fallback.
   - `read_range(evaluate_formulas=True)` now returns `uncached_formula_count` + an explicit anti-loop `warning` when formula cells are uncached (`null`).
   - `batch_write_ranges` redirects formatting-only ops (`number_format`, `styles`, `column_widths`, etc.) to `batch_format_workbook`, and auto-wraps scalar `"value"` / `"values"` / `"data"` entries as 1×1 `[[val]]`.
+  - `batch_format_workbook` supports singular `column_width` + `range` (`"B:F"`, `"B1:F5"`) and skips empty no-op formatting rules.
   - `add_excel_table` accepts `range` as a fallback alias for `data_range`, defaults `table_name` to `"Table1"`, and names exact required parameters on empty-range errors.
-  - `create_chart` accepts common chart-type aliases (`column`, `column_clustered`, `bar_clustered`, `bar_stacked`, `line_markers`, `pie_3d`, `doughnut`, etc.).
-  - `excel_live_batch_read_ranges` accepts `cell_ref` and `cell` as aliases for `range_ref`.
+  - `create_chart` accepts common chart-type aliases (`column`, `column_clustered`, `bar_clustered`, `bar_stacked`, `line_markers`, `pie_3d`, `doughnut`, etc.) and auto-detects text-only first columns as X-axis categories instead of plotting them as blank numeric series.
+  - `excel_live_batch_read_ranges` accepts `cell_ref`/`cell` aliases for `range_ref` and `sheet`/`worksheet`/`worksheet_name`/`tab` aliases for `sheet_name`.
+  - `create_document`, `create_workbook`, and `create_presentation` docstrings and `Sample Model Config/SYSTEM_PROMPT.md` clarify that parent directories are auto-created on save and anchor MCP routing via `check_office_status` across both wrapper clients (Bionic) and native MCP clients/CLIs.
+- **Excel 16.115 & Word 16.115 Live AppleScript Hardening:**
+  - Fixed `excel_live_list_worksheets`, `excel_live_add_worksheet`, and `excel_live_activate_worksheet` `-50`/`-1700` errors on modern Microsoft Excel for Mac (`16.115`).
+  - Fixed `save_document(format="pdf"|"rtf"|"txt"|"doc")` `-1708` errors in Microsoft Word 16.115 by opening export documents read-write (`read_only=False`), guarding post-`save as` document name reads, and auto-converting Word table `column_widths` passed in points (`>15`) or twips (`>500`) to inches.
 
 ### Added
 - **Model-Agnostic Stress-Test Suite (`Model-MCP Stress Test/STRESS_TEST_SUITE.md`):** 9-Phase / 12-Chat stress-test battery covering all 82 MCP tools (`EXCEL,COMPACT`, `EXCEL`, and `WORD,POWERPOINT`) and all 7 non-import Finance Skills.
-- **Local Model Compatibility Documentation:** Documented tested & rejected local models (`Gemma 4 26B A4B` MLX on `oMLX 0.5.0`, `Nemotron 3 Nano Omni` GGUF, `Qwen3.8 27B` MLX dense) with root-cause reasons across `README.md`, `docs/HARDWARE_AND_PROFILE_GUIDE.md`, `docs/EXECUTIVE_COMPARISON_MATRIX.md`, and `AGENTS.md`.
-- **Automated Regression Tests:** Expanded suite to **38 passing tests** covering OOXML list quoting, `column_widths` list fallback, Excel Table header repair, uncached-formula warnings, live timeout hints, scalar `value`/`values`, `create_chart` aliases, and `add_excel_table` hints.
+- **Local Model Compatibility Documentation:** Documented tested local models (`Qwen3.6 35B A3B` GGUF Q6_K/Q8_0 primary, `Qwen3.8 27B` MLX `Compatible (Slow)`, `Gemma 4 26B A4B` MLX on `oMLX 0.5.0` `Not Compatible`, `Nemotron 3 Nano Omni` GGUF `Not Compatible`) with root-cause reasons and recommended Bionic/llama.cpp settings (`Preserve Thinking = ON`, `Presence Penalty = 0.2`, `Repeat Penalty = 1.0`, avoiding `&` in MCP server names) across `README.md`, `docs/HARDWARE_AND_PROFILE_GUIDE.md`, `docs/EXECUTIVE_COMPARISON_MATRIX.md`, `skills/README.md`, and `AGENTS.md`.
+- **Automated Regression Tests:** Expanded suite to **38 passing tests** covering OOXML list quoting, `column_widths` list/singular fallback, `create_chart` auto-categories & aliases, Excel Table header repair, uncached-formula warnings, live timeout hints, scalar `value`/`values`, and `add_excel_table` hints.
 
 ---
 

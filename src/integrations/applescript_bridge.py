@@ -860,7 +860,11 @@ class AppleScriptBridge:
                     else
                         save as targetDoc file name hfsPath file format format document
                     end if
-                    return name of targetDoc
+                    try
+                        return name of targetDoc
+                    on error
+                        return name of active document
+                    end try
                 end if
             end tell
         end run
@@ -1133,6 +1137,7 @@ class AppleScriptBridge:
         on run argv
             set wbTarget to item 1 of argv
             set us to character id 31
+            set rs to character id 30
             tell application "Microsoft Excel"
                 if (count of workbooks) is 0 then
                     error "No open Excel workbooks"
@@ -1142,12 +1147,25 @@ class AppleScriptBridge:
                 else
                     set wb to workbook wbTarget
                 end if
+                set wbName to (name of wb) as text
+                set activeSh to ""
+                try
+                    set activeSh to (name of active sheet of wb) as text
+                on error
+                    try
+                        set activeSh to (name of active sheet) as text
+                    end try
+                end try
                 set shNames to {}
-                repeat with sh in worksheets of wb
-                    set end of shNames to name of sh
+                set shCount to count of worksheets of wb
+                repeat with j from 1 to shCount
+                    set end of shNames to (name of worksheet j of wb) as text
                 end repeat
+                set prevDelims to AppleScript's text item delimiters
                 set AppleScript's text item delimiters to us
-                return (name of wb) & (character id 30) & (name of active sheet of wb) & (character id 30) & (shNames as text)
+                set joinedSheets to shNames as text
+                set AppleScript's text item delimiters to prevDelims
+                return wbName & rs & activeSh & rs & joinedSheets
             end tell
         end run
         """
@@ -1181,8 +1199,9 @@ class AppleScriptBridge:
                 else
                     set wb to workbook wbTarget
                 end if
-                set newSh to make new worksheet at end of worksheets of wb with properties {name:newName}
-                return (name of wb) & (character id 31) & (name of newSh)
+                set newSh to make new worksheet at end of wb
+                set name of newSh to newName
+                return ((name of wb) as text) & (character id 31) & newName
             end tell
         end run
         """
@@ -1259,7 +1278,15 @@ class AppleScriptBridge:
                     set wb to workbook wbTarget
                 end if
                 activate object worksheet shTarget of wb
-                return (name of wb) & (character id 31) & (name of active sheet of wb)
+                set activeSh to shTarget
+                try
+                    set activeSh to (name of active sheet of wb) as text
+                on error
+                    try
+                        set activeSh to (name of active sheet) as text
+                    end try
+                end try
+                return ((name of wb) as text) & (character id 31) & activeSh
             end tell
         end run
         """
@@ -2216,7 +2243,14 @@ class AppleScriptBridge:
             if not raw_ref:
                 raise ValueError("Each range spec must include 'range_ref' (e.g. 'B2:F16')")
             clean_ref = validate_range_ref(str(raw_ref))
-            sh_name = str(item.get("sheet_name") or "")
+            sh_name = str(
+                item.get("sheet_name")
+                or item.get("sheet")
+                or item.get("worksheet")
+                or item.get("worksheet_name")
+                or item.get("tab")
+                or ""
+            )
             cleaned_specs.append({"sheet_name": sh_name, "range_ref": clean_ref})
             req_rows.append(_US.join([sh_name, clean_ref]))
 

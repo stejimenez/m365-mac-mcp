@@ -96,28 +96,28 @@ This server was developed, benchmarked, and end-to-end verified on the following
 | **Hardware** | **Mac mini (Apple M4 Pro, `Mac16,11`)** — 14-core CPU (10P + 4E), **64 GB** Unified Memory |
 | **Operating System** | **macOS 27.2.1** (Build `26B131`, Apple Silicon) |
 | **Microsoft 365 for Mac** | Excel `16.115`, Word `16.115.1`, PowerPoint `16.115.1` |
-| **MCP Client & Runtime** | **Bionic `1.2.1+10`** + **LM Studio** (local inference) |
-| **Local Inference Model** | **`Qwen3.6 35B A3B — Q8_0`** (Context `65536`, GPU Offload `40`, CPU Threads `6`, Eval Batch `2048`, Phys Batch `512`, Flash Attention `ON`, Temp `0.3`, Reasoning Budget `2048`, Preserve Thinking `OFF`, Unified + GPU KV Cache `ON`, Top-K `20`, Top-P `0.95`, Min-P `0.05`, Repeat Penalty `1.0` (`Off`), Experts `8`) — see [`Sample Model Config/`](Sample%20Model%20Config/) |
+| **MCP Client & Runtime** | **Bionic `1.2.2+3`** + **LM Studio** (`Metal llama.cpp 2.80.1` for GGUF) |
+| **Local Inference Model** | **`Qwen3.6 35B A3B — GGUF Q6_K` / `Q8_0`** (Context `65536`, GPU Offload `40`, CPU Threads `6`, Eval Batch `2048`, Phys Batch `512`, Flash Attention `ON`, Temp `0.3`, Reasoning Budget `2048`, Preserve Thinking `ON`, Unified + GPU KV Cache `ON`, Top-K `20`, Top-P `0.95`, Min-P `0.05`, Repeat Penalty `1.0` (`Off`), Presence Penalty `0.2`, Experts `8`) — see [`Sample Model Config/`](Sample%20Model%20Config/) |
 | **Python Environment** | Python `3.12.16` (`.venv`), `mcp` `2.3.0`, `openpyxl` `3.1.5`, `python-docx` `1.2.0` |
 | **Recommended MCP Env** | `M365_MCP_PROFILE=EXCEL,COMPACT` (or `EXCEL`), `M365_MCP_LIVE_SYNC=AUTO`, `M365_MCP_FORMULA_GUARD=LITERALS_ONLY`, `M365_MCP_APPLESCRIPT_TIMEOUT=30` |
 
 ### Hardware Tier & MCP Profile Quick Summary
 
-| Apple Silicon Tier | Best Local Model (LM Studio / MLX) | Recommended Profile | Safe Context | Expected Speed & Risk |
+| Apple Silicon Tier | Best Local Model (LM Studio / GGUF) | Recommended Profile | Safe Context | Expected Speed & Risk |
 | --- | --- | --- | --- | --- |
-| **16 GB M4** | `Qwen3.5-9B` *(MLX 4/6-bit)* or `Qwen3-14B` *(4-bit, tight ctx)* | `EXCEL,COMPACT` *(25 tools, ~2.4K tok)* | `12K–16K` *(Q8 KV)* | ~20–32 tok/s; use 2-phase chunking on big builds |
-| **32 GB M4 / M4 Pro** | `Qwen3.6 35B A3B` *(MLX/GGUF 4-bit)* or `gpt-oss-20b` | `EXCEL,COMPACT` or `EXCEL` | `32K` *(Q8 KV)* | ~20–30+ tok/s; all 9 skills in 1 shot, low risk |
-| **64 GB M4 Pro / Max** | `Qwen3.6 35B A3B — Q8_0` *(verified reference)* | `EXCEL,COMPACT` or `FULL` *(82 tools)* | `65K–128K` | ~18–26 tok/s (Pro) / 35–50+ (Max); very low risk |
+| **16 GB M4** | `Qwen3.5-9B` *(GGUF `Q4_K_M` / MLX 4–6bit)* or `Qwen3-14B` *(4-bit, tight ctx)* | `EXCEL,COMPACT` *(25 tools, ~2.4K tok)* | `12K–16K` *(Q8 KV)* | ~20–32 tok/s; use 2-phase chunking on big builds |
+| **32 GB M4 / M4 Pro** | `Qwen3.6 35B A3B` *(GGUF `Q4_K_M`)* or `gpt-oss-20b` | `EXCEL,COMPACT` or `EXCEL` | `32K` *(Q8 KV)* | ~20–30+ tok/s; all 9 skills in 1 shot, low risk |
+| **64 GB M4 Pro / Max** | `Qwen3.6 35B A3B — GGUF Q6_K / Q8_0` *(verified reference)* | `EXCEL,COMPACT` or `FULL` *(82 tools)* | `65K–128K` | ~22–32 tok/s (`Q6_K`) / ~18–26 (`Q8_0`); very low risk |
 
 > **Full Hardware, Local Model & `M365_MCP_PROFILE` Decision Guide:** See [**`docs/HARDWARE_AND_PROFILE_GUIDE.md`**](docs/HARDWARE_AND_PROFILE_GUIDE.md).
 
-### Tested & Not Compatible Local Models
+### Tested Local Model Compatibility Notes
 
-| Model | Format / Runtime | Status | Reason |
+| Model | Format / Runtime | Status | Notes / Reason |
 | :--- | :--- | :---: | :--- |
 | **`Gemma 4 26B A4B`** | `MLX 8bit MoE` (`oMLX 0.5.0`) | **Not Compatible** | `oMLX 0.5.0` tool-parser instability: intermittent bare-`thought` premature stops (requiring manual `"continue"`) and leaked raw `call:call_mcp_tool` control tokens. |
 | **`Nemotron 3 Nano Omni`** | `GGUF Q8_0` (`llama.cpp`) | **Not Compatible** | Weak multi-step MCP discipline: 15× `exists` folder loop, cell-by-cell `write_cell` writes, hallucinated paths instead of `create_workbook`, and `.internal/skills` guardrail violation. |
-| **`Qwen3.8 27B`** | `MLX 8bit` (`oMLX`, dense) | **Not Compatible *(Too Slow)*** | Passed Phase 0A-1 with 10/10 accuracy (11 calls, 0 errors), but dense 27B 8-bit on `oMLX` (no `Reasoning Budget` cap) took **16m 50s** for a 2-tab smoke test. |
+| **`Qwen3.8 27B`** | `MLX 8bit` (`oMLX`, dense) | **Compatible *(Slow)*** | Passed Phase 0A-1 with 10/10 accuracy (11 calls, 0 errors, exact `$1,195` live), but dense 27B 8-bit on `oMLX` (no `Reasoning Budget` cap) took **16m 50s** for a 2-tab smoke test — works accurately, just slow for interactive use. |
 
 ### Installation
 
@@ -219,15 +219,15 @@ Register two entries pointing to the same server `.venv`:
    - **Args:** `["/path/to/m365-mac-mcp/src/m365_mac_mcp_server.py"]`
    - **Env:** `M365_MCP_PROFILE=excel,compact` (or `excel`), `M365_MCP_LIVE_SYNC=auto`, `M365_MCP_FORMULA_GUARD=literals_only`
    - **Description:** `m365-mac-mcp (Excel) for reading, editing, formatting, auditing, and live recalculating .xlsx/.xlsm workbooks.`
-2. **`m365-mac-mcp` (Word & PPT)** — set to **Hide from agent unless mentioned** so it uses zero context until you `@`-mention it:
+2. **`Word and PPT 365 MCP`** *(avoid `&` in MCP server names so clients never HTML-escape it to `&amp;`)* — set to **Hide from agent unless mentioned** so it uses zero context until you `@`-mention it:
    - **Env:** `M365_MCP_PROFILE=word,powerpoint`
 
-**Recommended LM Studio / Bionic settings for `Qwen3.6 35B A3B — Q8_0` (full screenshots & system prompt in [`Sample Model Config/`](Sample%20Model%20Config/)):**
+**Recommended LM Studio / Bionic settings for `Qwen3.6 35B A3B — GGUF Q6_K` (fastest daily driver, ~29 GB) or `Q8_0` (~38 GB) (full screenshots & system prompt in [`Sample Model Config/`](Sample%20Model%20Config/)):**
 - **Context & Performance:** `Context Length = 65536`, `GPU Offload = 40`, `CPU Thread Pool Size = 6`, `Evaluation Batch Size = 2048`, `Physical Batch Size = 512`, `Max Concurrent Predictions = 1`, `Flash Attention = ON`
-- **Generation & Reasoning:** `Temperature = 0.3`, `Context Overflow = Stop at Limit`, `Reasoning Budget = 2048` (`"I have to answer now."`), `Preserve Thinking = OFF`
-- **Memory:** `Offload KV Cache to GPU = ON`, `Unified KV Cache = ON`, `Context Checkpoints = 32`, `Keep Model in Memory = ON`, `Try mmap() = ON`, `Speculative Decoding = Off`
-- **Sampling:** `Top K = 20`, `Top P = 0.95`, `Min P = 0.05`, `Repeat Penalty = 1.0` (`Off` — prevents JSON quote corruption on large 2D arrays), `Number of Experts = 8`
-- **System Prompt:** Copy [`Sample Model Config/SYSTEM_PROMPT.md`](Sample%20Model%20Config/SYSTEM_PROMPT.md) (`UNIVERSAL STERLING ENGINE V3.4 — FINANCE & M365 SPECIALIST`) into Bionic/LM Studio's System Prompt so the agent stays concise, avoids tool loops, blocks Bionic's built-in Office/shell bypasses, respects `M365_MCP_FORMULA_GUARD`, and uses your custom Finance `skills/` cleanly.
+- **Generation & Reasoning:** `Temperature = 0.3`, `Context Overflow = Stop at Limit`, `Reasoning Budget = 2048` (`"I have to answer now."`), `Preserve Thinking = ON` *(retains multi-turn reasoning so the agent never repeats tool loops)*
+- **Memory:** `Offload KV Cache to GPU = ON`, `Unified KV Cache = ON`, `Context Checkpoints = 32`, `Keep Model in Memory = ON`, `Try mmap() = ON`, `Speculative Decoding = Off` *(after editing Model Defaults, eject & reload the model or restart Bionic to flush cached KV checkpoints)*
+- **Sampling:** `Top K = 20`, `Top P = 0.95`, `Min P = 0.05`, `Repeat Penalty = 1.0` (`Off` — prevents JSON quote corruption on large 2D arrays), `Presence Penalty = 0.2` (`On` — gently prevents repetitive tool loops without corrupting JSON), `Number of Experts = 8`
+- **System Prompt:** Copy [`Sample Model Config/SYSTEM_PROMPT.md`](Sample%20Model%20Config/SYSTEM_PROMPT.md) (`UNIVERSAL STERLING ENGINE V3.4 — FINANCE & M365 SPECIALIST`) into your client's System Prompt so the agent stays concise, anchors MCP routing (`check_office_status`) cleanly across both wrapper clients (Bionic) and native MCP CLIs, avoids built-in folder/shell bypasses, respects `M365_MCP_FORMULA_GUARD`, and uses your custom Finance `skills/` cleanly.
   > **Disclosure:** Applying `Sample Model Config/SYSTEM_PROMPT.md` **highly customizes the model for financial modeling, corporate valuation, Excel/VBA, and Microsoft 365 work only**. If you also use Bionic / LM Studio for general chat or non-finance coding, apply this prompt inside a dedicated Finance Project rather than as your global default.
 
 #### For Claude Desktop
@@ -474,11 +474,7 @@ m365-mac-mcp/
 │   ├── SYSTEM_PROMPT.md                        # Recommended Qwen3.6 Finance & M365 system prompt
 │   ├── SYSTEM_PROMPT_GEMMA4_26B_A4B.md         # Dedicated Gemma 4 26B A4B system prompt
 │   ├── SYSTEM_PROMPT_GEMMA4_31B.md             # Dedicated Gemma 4 31B system prompt
-│   ├── SYSTEM_PROMPT_NEMOTRON3_NANO_OMNI.md    # Dedicated Nemotron 3 Nano Omni system prompt
-│   ├── bionic_mcp_config_part1.jpg             # Bionic MCP server setup (Connection, Command, Args)
-│   ├── bionic_mcp_config_part2.jpg             # Bionic MCP server setup (Env vars, Working dir)
-│   ├── qwen3.6_35b_a3b_q8_0_config_part1.png   # LM Studio model config (Prompt, Context, Reasoning)
-│   └── qwen3.6_35b_a3b_q8_0_config_part2.png   # LM Studio model config (Memory, Sampling, Advanced)
+│   └── SYSTEM_PROMPT_NEMOTRON3_NANO_OMNI.md    # Dedicated Nemotron 3 Nano Omni system prompt
 ├── skills/                                     # 9 Ready-to-use Finance Skills (SKILL.md) — see skills/README.md
 │   ├── README.md
 │   ├── financial-statement-extractor/SKILL.md

@@ -308,7 +308,7 @@ async def create_document(
     add_title_heading: bool = False,
     open_in_word: bool = False,
 ) -> Dict[str, Any]:
-    """Create a new Word document (.docx) for file-level editing."""
+    """Create a new Word document (.docx) for file-level editing. Parent directories are auto-created on save_document."""
     try:
         return await word.create_document(
             title=title,
@@ -795,7 +795,7 @@ async def create_workbook(
     include_title_header: bool = False,
     open_in_excel: bool = False,
 ) -> Dict[str, Any]:
-    """Create a new Excel workbook (.xlsx). Pass sheet_names=['IS','BS','CF'] to create multiple tabs in one call."""
+    """Create a new Excel workbook (.xlsx). Pass sheet_names=['IS','BS','CF'] to create multiple tabs in one call. Parent directories are auto-created on save_workbook."""
     try:
         return await excel.create_workbook(
             title=title,
@@ -1757,7 +1757,7 @@ async def create_presentation(
     theme: str = "default",
     template_path: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Create a new PowerPoint presentation."""
+    """Create a new PowerPoint presentation (.pptx). Parent directories are auto-created on save_presentation."""
     try:
         return sanitize_for_json(
             await powerpoint.create_presentation(

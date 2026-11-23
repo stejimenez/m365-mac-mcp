@@ -1793,10 +1793,32 @@ class ExcelController:
         if chart_title:
             chart.title = chart_title
 
-        data = Reference(
-            ws, min_col=min_col, min_row=min_row, max_col=max_col, max_row=max_row
-        )
-        chart.add_data(data, titles_from_data=True)
+        if max_col > min_col and max_row > min_row:
+            first_col_vals = [
+                ws.cell(row=r, column=min_col).value
+                for r in range(min_row + 1, max_row + 1)
+            ]
+            has_text_labels = any(isinstance(v, str) and v.strip() for v in first_col_vals)
+            has_numeric_vals = any(isinstance(v, (int, float)) and not isinstance(v, bool) for v in first_col_vals)
+            if has_text_labels and not has_numeric_vals:
+                data = Reference(
+                    ws, min_col=min_col + 1, min_row=min_row, max_col=max_col, max_row=max_row
+                )
+                cats = Reference(
+                    ws, min_col=min_col, min_row=min_row + 1, max_row=max_row
+                )
+                chart.add_data(data, titles_from_data=True)
+                chart.set_categories(cats)
+            else:
+                data = Reference(
+                    ws, min_col=min_col, min_row=min_row, max_col=max_col, max_row=max_row
+                )
+                chart.add_data(data, titles_from_data=True)
+        else:
+            data = Reference(
+                ws, min_col=min_col, min_row=min_row, max_col=max_col, max_row=max_row
+            )
+            chart.add_data(data, titles_from_data=True)
         ws.add_chart(chart, clean_pos)
 
         await self._save_working_copy(entry)
@@ -2212,7 +2234,7 @@ class ExcelController:
 
         known_op_keys = {
             "sheet_name", "sheet", "worksheet", "worksheet_name", "tab",
-            "column_widths", "row_heights", "freeze_panes",
+            "column_widths", "column_width", "row_heights", "freeze_panes",
             "auto_fit_columns", "min_col_width", "max_col_width", "col_padding",
             "auto_color_financial_model", "merge_ranges", "show_gridlines",
             "styles", "rules", "cell_styles", "formats", "range_styles",
@@ -2246,7 +2268,8 @@ class ExcelController:
             if is_flat_range_op:
                 # Fallback: accept flat per-range op like {'sheet_name': 'IS', 'range': 'A1:G1', 'bold': True}
                 flat_rule = {k: v for k, v in op.items() if k not in known_op_keys}
-                combined_rules.append(flat_rule)
+                if any(k not in ("range", "cells", "cell_range", "range_ref") for k in flat_rule):
+                    combined_rules.append(flat_rule)
             for skey in style_list_keys:
                 val = op.get(skey)
                 if isinstance(val, list):
@@ -2284,6 +2307,21 @@ class ExcelController:
                     applied_widths[col_letter] = width
 
             raw_col_widths = op.get("column_widths")
+            if raw_col_widths is None and op.get("column_width") is not None:
+                # Universal alias: singular {"column_width": 15, "range": "B:F"} or {"column_width": 15, "range": "B1:F5"}
+                single_w = float(op["column_width"])
+                if single_w <= 0:
+                    raise ValueError("column_width must be positive")
+                range_hint = (
+                    op.get("range")
+                    or op.get("cells")
+                    or op.get("cell_range")
+                    or op.get("range_ref")
+                )
+                if isinstance(range_hint, str) and range_hint.strip():
+                    col_spec_clean = re.sub(r"\d+", "", range_hint.split(",")[0].strip())
+                    if col_spec_clean:
+                        raw_col_widths = {col_spec_clean: single_w}
             if isinstance(raw_col_widths, list):
                 start_col_idx = 1
                 range_hint = (

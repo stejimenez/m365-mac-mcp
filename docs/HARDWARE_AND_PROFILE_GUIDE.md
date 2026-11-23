@@ -14,15 +14,15 @@ This guide provides realistic, benchmark-grounded recommendations for pairing **
 | Spec / Metric | **16 GB M4** *(Entry)* | **32 GB M4 / M4 Pro** *(Sweet Spot)* | **64 GB M4 Pro / Max** *(Verified Reference)* |
 | --- | --- | --- | --- |
 | **Safe LLM RAM Budget** *(after macOS + Excel + Bionic)* | **~9.0 – 10.5 GB** | **~24 – 26 GB** | **~54 – 56 GB** |
-| **#1 Recommended Model** | **`Qwen3.5-9B`** *(MLX 4/6-bit or `Q4_K_M`)* | **`Qwen3.6 35B A3B`** *(MLX 4-bit or `Q4_K_M`)* | **`Qwen3.6 35B A3B — Q8_0`** *(or MLX 8-bit)* |
-| **Strong Alternatives** | **`Qwen3-14B`** *(4-bit, tight ctx)* · **`Gemma 3/4 12B`** | **`gpt-oss-20b`** *(MoE 4-bit)* · **`Gemma 4 26B MoE`** · **`Devstral 24B`** | **`Qwen3.5/3.6 27B Dense — Q8_0`** · **`Gemma 4 31B Dense — Q8_0`** |
+| **#1 Recommended Model** | **`Qwen3.5-9B`** *(GGUF `Q4_K_M` or MLX 4/6-bit)* | **`Qwen3.6 35B A3B`** *(GGUF `Q4_K_M`)* | **`Qwen3.6 35B A3B — GGUF Q6_K` / `Q8_0`** |
+| **Strong Alternatives** | **`Qwen3-14B`** *(4-bit, tight ctx)* · **`Gemma 3/4 12B`** | **`gpt-oss-20b`** *(MoE 4-bit)* · **`Devstral 24B`** | **`Qwen3.8 27B`** *(GGUF `Q5_K_M`/`Q6_K`; MLX 8-bit is accurate but slow)* |
 | **Recommended MCP Profile** | **`EXCEL,COMPACT`** *(mandatory, 25 tools)* | **`EXCEL,COMPACT`** *(daily)* or `EXCEL` / `EXCEL,WORD` | **`EXCEL,COMPACT`** *(fastest)* or `FULL` *(all 82 tools)* |
 | **Safe Context Length** | `16,384` *(9B)* / `12,288` *(14B)* | `32,768` | `65,536` – `131,072` |
 | **KV Cache Quantization** | **Required:** `K=Q8_0, V=Q8_0` | **Recommended:** `K=Q8_0, V=Q8_0` | Optional (`FP16` or `Q8_0`) |
-| **Reasoning Budget** | `1024` (`Preserve Thinking = OFF`) | `1536–2048` (`Preserve Thinking = OFF`) | `2048` (`Preserve Thinking = OFF`) |
+| **Reasoning Budget** | `1024` (`Preserve Thinking = ON`) | `1536–2048` (`Preserve Thinking = ON`) | `2048` (`Preserve Thinking = ON`, `Presence Penalty = 0.2`) |
 | **System Prompt** | **V3.4 + 2-Phase Chunking** | **V3.4 Full** ([`SYSTEM_PROMPT.md`](../Sample%20Model%20Config/SYSTEM_PROMPT.md)) | **V3.4 Full** ([`SYSTEM_PROMPT.md`](../Sample%20Model%20Config/SYSTEM_PROMPT.md)) |
-| **Expected Decode Speed** | **~20–32 tok/s** *(9B)* / ~12–16 *(14B)* | **~20–30 tok/s** *(35B MoE)* / **35–50** *(gpt-oss-20b)* | **~18–26 tok/s** *(M4 Pro Q8)* / **35–50+** *(M4 Max)* |
-| **Hallucination / Loop Risk** | **Moderate** *(mitigated by chunking + Formula Guard)* | **Low–Moderate** | **Very Low** *(near-lossless Q8_0)* |
+| **Expected Decode Speed** | **~20–32 tok/s** *(9B)* / ~12–16 *(14B)* | **~20–30 tok/s** *(35B MoE)* / **35–50** *(gpt-oss-20b)* | **~22–32 tok/s** *(`Q6_K`)* / **~18–26** *(`Q8_0`)* |
+| **Hallucination / Loop Risk** | **Moderate** *(mitigated by chunking + Formula Guard)* | **Low–Moderate** | **Very Low** *(`Q6_K`/`Q8_0` + `Preserve Thinking = ON`)* |
 
 ---
 
@@ -38,27 +38,27 @@ This guide provides realistic, benchmark-grounded recommendations for pairing **
 - **Best Setup:** **`Qwen3.6 35B A3B`** (MLX 4-bit or `Q4_K_M`, ~19.5–20.5 GB) + `M365_MCP_PROFILE=EXCEL,COMPACT` (or `EXCEL`) + `Context = 32768` + `K/V = Q8_0` + `Reasoning Budget = 1536–2048` + **V3.4 Full**.
 - **Alternatives:**
   - **`gpt-oss-20b`** (21B total / 3.6B active MoE, ~12–14 GB): Fastest tool caller (~35–50 tok/s) with huge KV headroom (32K–64K context).
-  - **`Gemma 4 26B MoE`** (4-bit, ~15–16 GB): Best multimodal pick for pasting PDF/screenshot financial tables.
   - **`Devstral Small 24B`** (4-bit, ~14–15 GB): Strongest specialist for heavy Excel VBA / Python automation.
+  *(Avoid `Gemma 4 26B A4B` MLX on `oMLX 0.5.0` — see Compatibility Notes below.)*
 - **What to Expect:** All 9 Finance Skills run cleanly in 1 shot at ~20–30 tok/s.
 - **Hallucination / Loop Profile (Low–Moderate):** Occasional 4-bit quantization slips on multi-sheet accounting logic—caught reliably by `model-auditor`, `M365_MCP_FORMULA_GUARD`, and live `Balance Check == 0` checks.
 
 ### Tier 3 — 64 GB Unified Memory (M4 Pro / M4 Max or Better) — *Verified Reference*
 - **Memory Reality:** **~54–56 GB** available; zero swap pressure even with Excel, Word, PowerPoint, Bionic, and 65K–128K context open together.
-- **Best Setup (Verified on Mac mini M4 Pro 64 GB):** **`Qwen3.6 35B A3B — GGUF Q6_K` (~29 GB, fastest) or `Q8_0` (~38 GB, lossless)** + `M365_MCP_PROFILE=EXCEL,COMPACT` (or `FULL`) + `Context = 65536` + `Flash Attention = ON` + `Unified + GPU KV Cache = ON` + `Reasoning Budget = 2048` + `Repeat Penalty = Off` + **V3.4 Full** (see [`Sample Model Config/`](../Sample%20Model%20Config/)).
+- **Best Setup (Verified on Mac mini M4 Pro 64 GB):** **`Qwen3.6 35B A3B — GGUF Q6_K` (~29 GB, fastest) or `Q8_0` (~38 GB, lossless)** + `M365_MCP_PROFILE=EXCEL,COMPACT` (or `FULL`) + `Context = 65536` + `Flash Attention = ON` + `Unified + GPU KV Cache = ON` + `Reasoning Budget = 2048` + `Preserve Thinking = ON` + `Repeat Penalty = Off` + `Presence Penalty = 0.2` + **V3.4 Full** (see [`Sample Model Config/`](../Sample%20Model%20Config/)).
 - **Hallucination / Loop Profile (Very Low):** `Q6_K`/`Q8_0` MoE eliminates 4-bit drift on nested JSON (`batch_format_workbook`, `batch_write_ranges`) and multi-sheet formulas while keeping interactive MoE speed.
 
 > **GGUF (`llama.cpp`) vs. MLX (`oMLX`) Tip:** For **multi-turn MCP tool-calling in Bionic / LM Studio**, prefer **GGUF (`llama.cpp`)** — it delivers more reliable tool-call parsing, faster multi-turn prompt-cache prefill, and unlocks **`Reasoning Budget`** caps (`1024–2048`) so models stay concise and responsive.
 
-### Tested & Not Compatible / Rejected Local Models
+### Tested Local Model Compatibility Notes
 
-The following local models were stress-tested against `Model-MCP Stress Test/STRESS_TEST_SUITE.md` and marked **Not Compatible** for production `m365-mac-mcp` workflows:
+The following local models were stress-tested against `Model-MCP Stress Test/STRESS_TEST_SUITE.md`:
 
-| Model | Format / Runtime | Status | Reason |
+| Model | Format / Runtime | Status | Notes / Reason |
 | :--- | :--- | :---: | :--- |
 | **`Gemma 4 26B A4B`** | `MLX 8bit MoE` (`oMLX 0.5.0`) | **Not Compatible** | Unstable Gemma 4 special-token / tool-call parsing under `oMLX 0.5.0`: randomly stops mid-workflow with bare `thought` (zero user feedback, requiring manual `"continue"`) and leaks raw `call:call_mcp_tool{...<\|"\|>...}` control tokens into chat text. |
 | **`Nemotron 3 Nano Omni`** | `GGUF Q8_0` (`llama.cpp 2.80.1`) | **Not Compatible** | Insufficient multi-step MCP planning and instruction-following discipline: looped 15× on built-in folder existence checks, wrote tables cell-by-cell (`write_cell`), tried to open non-existent/hallucinated file paths instead of calling `create_workbook`, and ignored system-prompt restrictions against probing `.internal/skills`. |
-| **`Qwen3.8 27B`** | `MLX 8bit` (`oMLX 0.5.0`, dense) | **Not Compatible *(Too Slow)*** | Passed Phase 0A-1 with 10/10 institutional accuracy (11 calls, 0 errors, exact `$1,195` live recalc), but dense 27B 8-bit on `oMLX` (no `Reasoning Budget` cap) took **16m 50s** for a 2-tab smoke test — impractical for interactive multi-phase workflows. |
+| **`Qwen3.8 27B`** | `MLX 8bit` (`oMLX 0.5.0`, dense) | **Compatible *(Slow)*** | Passed Phase 0A-1 with 10/10 institutional accuracy (11 calls, 0 errors, exact `$1,195` live recalc), but dense 27B 8-bit on `oMLX` (no `Reasoning Budget` cap) took **16m 50s** for a 2-tab smoke test — fully compatible and accurate, just slow for interactive multi-phase workflows. |
 
 ---
 

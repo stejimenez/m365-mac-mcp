@@ -7,7 +7,7 @@
 
 This folder contains **9 ready-to-use**, pure-Markdown (**2.5–4.0 KB** each) **Finance Skills (`SKILL.md`)** supporting **natural-language prompts in English, French, and Spanish (EN / FR / ES)** so **non-technical finance professionals** can run institutional Excel, Word, and PowerPoint workflows—powered by **`m365-mac-mcp`**.
 
-Every skill follows a strict **5-block low-token blueprint** (*Trigger & Scope → Pre-Flight / HALT → Exact Tool Sequence → IFRS / FASB / SOX 404 Guardrails → Verification Gate*), keeping local LLMs (such as **`Qwen3.6 35B A3B — Q8_0`** in Bionic / LM Studio) fast, auditable, and hallucination-free.
+Every skill follows a strict **5-block low-token blueprint** (*Trigger & Scope → Pre-Flight / HALT → Exact Tool Sequence → IFRS / FASB / SOX 404 Guardrails → Verification Gate*), keeping local LLMs (such as **`Qwen3.6 35B A3B — GGUF Q6_K / Q8_0`** in Bionic / LM Studio) fast, auditable, and hallucination-free.
 
 ---
 
@@ -30,7 +30,7 @@ Recommended MCP environment variables *(all optional — if omitted or left blan
 1. Open **Bionic → Settings → Skills**.
 2. Click **Add / Import Skill** and select the `skills/` folder (or individual `skills/<skill-name>/SKILL.md` files).
 3. **Recommended Finance System Prompt (`V3.4`):**  
-   Copy [`Sample Model Config/SYSTEM_PROMPT.md`](../Sample%20Model%20Config/SYSTEM_PROMPT.md) (`UNIVERSAL STERLING ENGINE V3.4 — FINANCE & M365 SPECIALIST`) into your Bionic **Finance Project** System Prompt. It blocks Bionic's built-in Office viewer, shell/Python bypasses, and `.internal/skills/.../SKILL.md` while letting your custom Finance skills load cleanly, enforces `M365_MCP_FORMULA_GUARD`, and prevents mental calculation of uncached `openpyxl` formulas.
+   Copy [`Sample Model Config/SYSTEM_PROMPT.md`](../Sample%20Model%20Config/SYSTEM_PROMPT.md) (`UNIVERSAL STERLING ENGINE V3.4 — FINANCE & M365 SPECIALIST`) into your **Finance Project** System Prompt (works across both wrapper clients like Bionic and native MCP clients/CLIs). It anchors MCP routing (`check_office_status`), blocks built-in Office viewers, folder/shell/Python bypasses, and non-MCP document/canvas skills while letting your custom Finance skills load cleanly, enforces `M365_MCP_FORMULA_GUARD`, and prevents mental calculation of uncached `openpyxl` formulas.
    > **Disclosure:** Applying `Sample Model Config/SYSTEM_PROMPT.md` **highly customizes the model for financial modeling, corporate valuation, Excel/VBA, and Microsoft 365 work only**. If you also use Bionic / LM Studio for general-purpose chat or non-finance software development, apply it to a dedicated Finance Project instead of your global default prompt.
 4. Toggle your `m365-mac-mcp` MCP connection **OFF → ON** if you changed any environment variables.
 
