@@ -2,7 +2,7 @@
 
 *Dual-mode (file-level + live AppleScript) MCP server for Microsoft Excel, Word, and PowerPoint — verified on **macOS 27.x** & **Microsoft Office 16.x** (`m365-mac-mcp`).*
 
-![Release](https://img.shields.io/badge/Release-v2.3.0-blue)
+![Release](https://img.shields.io/badge/Release-v2.3.1-blue)
 ![macOS](https://img.shields.io/badge/macOS-27.x%20(Apple%20Silicon)-000000?logo=apple)
 ![Microsoft Office](https://img.shields.io/badge/Microsoft%20Office%20for%20Mac-16.x-D83B01?logo=microsoftoffice)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
@@ -110,6 +110,14 @@ This server was developed, benchmarked, and end-to-end verified on the following
 | **64 GB M4 Pro / Max** | `Qwen3.6 35B A3B — Q8_0` *(verified reference)* | `EXCEL,COMPACT` or `FULL` *(82 tools)* | `65K–128K` | ~18–26 tok/s (Pro) / 35–50+ (Max); very low risk |
 
 > **Full Hardware, Local Model & `M365_MCP_PROFILE` Decision Guide:** See [**`docs/HARDWARE_AND_PROFILE_GUIDE.md`**](docs/HARDWARE_AND_PROFILE_GUIDE.md).
+
+### Tested & Not Compatible Local Models
+
+| Model | Format / Runtime | Status | Reason |
+| :--- | :--- | :---: | :--- |
+| **`Gemma 4 26B A4B`** | `MLX 8bit MoE` (`oMLX 0.5.0`) | **Not Compatible** | `oMLX 0.5.0` tool-parser instability: intermittent bare-`thought` premature stops (requiring manual `"continue"`) and leaked raw `call:call_mcp_tool` control tokens. |
+| **`Nemotron 3 Nano Omni`** | `GGUF Q8_0` (`llama.cpp`) | **Not Compatible** | Weak multi-step MCP discipline: 15× `exists` folder loop, cell-by-cell `write_cell` writes, hallucinated paths instead of `create_workbook`, and `.internal/skills` guardrail violation. |
+| **`Qwen3.8 27B`** | `MLX 8bit` (`oMLX`, dense) | **Not Compatible *(Too Slow)*** | Passed Phase 0A-1 with 10/10 accuracy (11 calls, 0 errors), but dense 27B 8-bit on `oMLX` (no `Reasoning Budget` cap) took **16m 50s** for a 2-tab smoke test. |
 
 ### Installation
 
@@ -460,9 +468,13 @@ m365-mac-mcp/
 ├── docs/
 │   ├── EXECUTIVE_COMPARISON_MATRIX.md          # Standalone 16GB/32GB/64GB M4 comparison matrix
 │   └── HARDWARE_AND_PROFILE_GUIDE.md           # 16GB/32GB/64GB M4 model & M365_MCP_PROFILE guide
+├── Model-MCP Stress Test/
+│   └── STRESS_TEST_SUITE.md                    # 9-Phase / 12-Chat model-agnostic stress-test suite (all 82 tools)
 ├── Sample Model Config/
 │   ├── SYSTEM_PROMPT.md                        # Recommended Qwen3.6 Finance & M365 system prompt
-│   ├── SYSTEM_PROMPT_GEMMA4_31B.md             # Dedicated Gemma 4 (31B / 26B A4B MLX) system prompt
+│   ├── SYSTEM_PROMPT_GEMMA4_26B_A4B.md         # Dedicated Gemma 4 26B A4B system prompt
+│   ├── SYSTEM_PROMPT_GEMMA4_31B.md             # Dedicated Gemma 4 31B system prompt
+│   ├── SYSTEM_PROMPT_NEMOTRON3_NANO_OMNI.md    # Dedicated Nemotron 3 Nano Omni system prompt
 │   ├── bionic_mcp_config_part1.jpg             # Bionic MCP server setup (Connection, Command, Args)
 │   ├── bionic_mcp_config_part2.jpg             # Bionic MCP server setup (Env vars, Working dir)
 │   ├── qwen3.6_35b_a3b_q8_0_config_part1.png   # LM Studio model config (Prompt, Context, Reasoning)

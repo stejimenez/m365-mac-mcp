@@ -19,7 +19,7 @@ description: Build dynamic IFRS/FASB multi-year 3-statement Excel projections wi
 1. **Audit Historicals:** Call `inspect_workbook(file_path=...)` and `audit_workbook_formulas(file_path=...)` to verify the base.
 2. **Open & Add Assumptions Tab:** Call `open_workbook`, then `add_worksheet(workbook_id, "Assumptions", position=0)`.
 3. **Add Scenario Dropdown:** Call `add_data_validation(validation_type="list", formula1=["Base", "Bull", "Bear"])` on `Assumptions!B2` and wire active drivers via `=IF($B$2="Bull", ..., IF($B$2="Bear", ..., ...))`.
-4. **Write Projections (1 `batch_write_ranges` Call PER Sheet — write Labels/Inputs + `fill_formula` across projected columns, NEVER hand-calculate in `<think>`):** Across `Assumptions`, `Income Statement`, `Balance Sheet`, and `Cash Flow`:
+4. **Write Projections (1 `batch_write_ranges` Call/Sheet — Labels/Inputs + `fill_formula` across projected columns, ZERO mental math):** Across `Assumptions`, `Income Statement`, `Balance Sheet`, and `Cash Flow`:
    - **IS:** Dynamic Revenue, COGS, OpEx, EBIT, Taxes (`IAS 12`/`ASC 740`), Net Income.
    - **BS:** Working capital via DSO/DIO/DPO, PP&E roll-forward (`Prior + CapEx - D&A` per `IAS 16`/`ASC 360`), Retained Earnings (`Prior RE + 'Income Statement'!NI - Distributions`), **Cash linked to `'Cash Flow'!Ending Cash`**, and `Balance Check = Assets - L&E`.
    - **CF:** Net Income link, `+D&A`, Working Capital deltas (`-ΔAR`, `-ΔInv`, `+ΔAP`), CapEx, Financing, Net Change in Cash, Ending Cash.
@@ -30,4 +30,4 @@ description: Build dynamic IFRS/FASB multi-year 3-statement Excel projections wi
 - **SOX 404:** Centralize blue inputs on `Assumptions`; zero hardcoded calculated rows; obey `M365_MCP_FORMULA_GUARD`.
 
 ## 5. Verification & Output Gate
-Run `audit_workbook_formulas` (`clean: true`, `external_links_count: 0`) AND `excel_live_open` + `excel_live_batch_read_ranges` proving `Balance Check == 0` across every projected year, output a compact KPI table in plain finance language (never mention internal tool/skill names), and add a 1-line **Fresh-Chat Handoff Note**: *Saved to `<path>`. If the bottom-right **Context** indicator is >50%, start a **New Chat** with this file path before running a DCF valuation, sensitivity test, or executive brief.*
+Run `audit_workbook_formulas` (`clean: true`, `external_links_count: 0`) AND `excel_live_open` + `excel_live_batch_read_ranges` proving `Balance Check == 0` across every projected year, output a compact KPI table in plain finance language (never mention internal tool/skill names), and add a 1-line **Fresh-Chat Handoff Note**: *Saved to `<path>`. If your chat context is >50%, start a **New Chat** with this file path before running a DCF valuation, sensitivity test, or executive brief.*

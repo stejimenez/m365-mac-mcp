@@ -17,7 +17,7 @@ description: Build an IFRS/FASB/SOX CapEx capital-budgeting workbook (NPV, IRR, 
 
 ## 3. Exact m365-mac-mcp Tool Sequence
 1. **Create Tabs (1 Call):** `create_workbook(title=..., sheet_names=["Executive Summary", "Project Cash Flows", "Sensitivity & Charts"])`.
-2. **Write Model (1 `batch_write_ranges` Call/Sheet — 3 Calls Total; Labels/Inputs + `fill_formula` across ranges, ZERO mental math in `<think>`):**
+2. **Write Model (1 `batch_write_ranges` Call/Sheet — 3 Calls Total; Labels/Inputs + `fill_formula` e.g. `{"sheet_name":"Project Cash Flows","range":"D2:H2","fill_formula":"=C2*(1+'Executive Summary'!$B$...)"}` — raw numbers or quoted `"=..."` strings only, ZERO mental math):**
    - **Call 1 — `Project Cash Flows` (`A1`, Cols `B..H` = `Year 0..N`):** R1 Headers, R2 Revenue (`fill_formula` `D2:H2`), R3 OpEx, R4 EBITDA, R5 Depr., R6 EBIT, R7 Tax (`IAS 12`/`ASC 740`), R8 NOPAT, R9 `+D&A`, R10 `-ΔNWC` (recovered Yr `N`), R11 `-CapEx`, R12 `+After-Tax Salvage` (`=Salvage-(Salvage-EndBV)*Tax`), R13 **UFCF**, R14 Cum. UFCF, R15 Disc. Factor (`=1/(1+WACC)^t`), R16 PV of UFCF, R17 Cum. PV.
    - **Call 2 — `Executive Summary` (`A1`):** Blue inputs + KPI Box linked to `'Project Cash Flows'!B13` & `C13:H13`:
      - **NPV:** `=NPV(WACC,'Project Cash Flows'!C13:H13)+'Project Cash Flows'!B13` *(Year 0 outside `NPV()`)*.
@@ -30,4 +30,4 @@ description: Build an IFRS/FASB/SOX CapEx capital-budgeting workbook (NPV, IRR, 
 - **SOX 404:** Centralize all inputs on `Executive Summary`; zero hardcoded KPIs, tax shields, or salvage taxes.
 
 ## 5. Verification & Output Gate
-Run `audit_workbook_formulas` (`clean: true`, `external_links_count: 0`) AND `excel_live_open` + `excel_live_batch_read_ranges` on `Executive Summary`, output ONLY a compact Go/No-Go KPI table in plain finance language (never mention internal tool/skill names), and add a 1-line **Fresh-Chat Handoff Note**: *Saved to `<path>`. If the bottom-right **Context** indicator is >50%, start a **New Chat** with this file path for follow-up analysis.*
+Run `audit_workbook_formulas` (`clean: true`, `external_links_count: 0`) AND `excel_live_open` + `excel_live_batch_read_ranges` on `Executive Summary`, output ONLY a compact Go/No-Go KPI table in plain finance language (never mention internal tool/skill names), and add a 1-line **Fresh-Chat Handoff Note**: *Saved to `<path>`. If your chat context is >50%, start a **New Chat** with this file path for follow-up analysis.*

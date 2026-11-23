@@ -597,12 +597,13 @@ class ExcelController:
             max_col = min_col + max_cols - 1
             truncated = True
 
-        def _extract() -> List[List[Any]]:
+        def _extract() -> tuple[List[List[Any]], int]:
+            uncached_formulas = 0
             if evaluate_formulas:
                 wb_e, ws_e = self._load_cached_evaluated_sheet(entry, ws.title)
                 if ws_e is not None:
                     try:
-                        return [
+                        eval_rows = [
                             list(row)
                             for row in ws_e.iter_rows(
                                 min_row=min_row,
@@ -612,9 +613,24 @@ class ExcelController:
                                 values_only=True,
                             )
                         ]
+                        raw_rows = [
+                            list(row)
+                            for row in ws.iter_rows(
+                                min_row=min_row,
+                                max_row=max_row,
+                                min_col=min_col,
+                                max_col=max_col,
+                                values_only=True,
+                            )
+                        ]
+                        for e_row, r_row in zip(eval_rows, raw_rows):
+                            for e_val, r_val in zip(e_row, r_row):
+                                if e_val is None and isinstance(r_val, str) and r_val.startswith("="):
+                                    uncached_formulas += 1
+                        return eval_rows, uncached_formulas
                     finally:
                         wb_e.close()
-            return [
+            raw_rows = [
                 list(row)
                 for row in ws.iter_rows(
                     min_row=min_row,
@@ -624,8 +640,9 @@ class ExcelController:
                     values_only=True,
                 )
             ]
+            return raw_rows, 0
 
-        rows_data = await asyncio.to_thread(_extract)
+        rows_data, uncached_formula_count = await asyncio.to_thread(_extract)
         if rows_data:
             rows_data = self._trim_2d_grid(rows_data)
             if rows_data:
@@ -648,7 +665,47 @@ class ExcelController:
         }
         if truncated:
             payload["truncated"] = True
+        if uncached_formula_count > 0:
+            payload["uncached_formula_count"] = uncached_formula_count
+            payload["warning"] = (
+                f"{uncached_formula_count} formula cell(s) in this range have no cached value (null). "
+                "File-level reads cannot calculate formulas—do NOT retry read_range with other ranges "
+                "or estimate values mentally. Save the workbook and read live via excel_live_open + excel_live_batch_read_ranges."
+            )
         return sanitize_for_json(payload)
+
+    @staticmethod
+    def _ensure_valid_excel_table_headers(wb: Any) -> List[str]:
+        """Ensure every Excel Table header cell is non-empty, non-formula, and unique.
+
+        Microsoft Excel refuses to open .xlsx files (Parameter error -50 / repair prompt)
+        when an OOXML Table has a blank, formula, or duplicate column header.
+        """
+        repaired: List[str] = []
+        for ws in wb.worksheets:
+            for tbl in ws.tables.values():
+                try:
+                    min_col, min_row, max_col, _ = range_boundaries(tbl.ref)
+                except Exception:
+                    continue
+                seen: set[str] = set()
+                for offset, col_idx in enumerate(range(min_col, max_col + 1), start=1):
+                    cell = ws.cell(row=min_row, column=col_idx)
+                    raw = cell.value
+                    header = str(raw).strip() if raw is not None else ""
+                    if not header or header.startswith("="):
+                        header = f"Column{offset}"
+                        cell.value = header
+                        repaired.append(f"{ws.title}!{cell.coordinate} -> '{header}'")
+                    base = header
+                    suffix = 2
+                    while header.lower() in seen:
+                        header = f"{base}_{suffix}"
+                        suffix += 1
+                    if header != (str(raw).strip() if raw is not None else ""):
+                        cell.value = header
+                    seen.add(header.lower())
+        return repaired
 
     @staticmethod
     def _trim_2d_grid(rows: List[List[Any]]) -> List[List[Any]]:
@@ -1306,7 +1363,19 @@ class ExcelController:
     def _normalize_batch_data(op: Dict[str, Any], raw_data: Any) -> List[List[Any]]:
         """Normalize flat 1D lists and auto-orient 1xN / Nx1 matrices to match an explicit range shape."""
         if not isinstance(raw_data, list) or not raw_data:
-            raise ValueError(f"Each operation must include non-empty 'data' (sheet={op.get('sheet_name') or op.get('sheet')})")
+            sheet_label = op.get("sheet_name") or op.get("sheet")
+            format_only_keys = {
+                "number_format", "formatting", "column_widths", "row_heights",
+                "styles", "bold", "italic", "fill_color", "font_color", "freeze_panes",
+            }
+            if any(k in op for k in format_only_keys):
+                raise ValueError(
+                    f"Formatting-only operation detected (sheet={sheet_label}): "
+                    "call batch_format_workbook (not batch_write_ranges) to apply number_format, styles, or column_widths."
+                )
+            raise ValueError(
+                f"Each operation must include non-empty 'data', 'values', 'value', or 'fill_formula' (sheet={sheet_label})"
+            )
 
         # Determine if caller passed an explicit A1:B2 range to infer intended 1xN vs Nx1 orientation
         raw_ref = str(
@@ -1359,6 +1428,14 @@ class ExcelController:
         fill_fml = op.get("fill_formula")
         if fill_fml is None and raw_data is None and op.get("formula"):
             fill_fml = op.get("formula")
+        if fill_fml is None and raw_data is None and "value" in op:
+            single_val = op["value"]
+            if isinstance(single_val, list):
+                raw_data = single_val
+            else:
+                return [[single_val]]
+        if fill_fml is None and raw_data is not None and not isinstance(raw_data, list):
+            return [[raw_data]]
 
         if fill_fml is not None:
             fml_str = str(fill_fml).strip()
@@ -1697,12 +1774,18 @@ class ExcelController:
 
         min_col, min_row, max_col, max_row = range_boundaries(clean_ref)
 
-        chart_key = chart_type.lower()
-        if chart_key == "bar":
+        chart_key = chart_type.strip().lower().replace("-", "_").replace(" ", "_")
+        if chart_key in {
+            "bar", "column", "col", "column_clustered", "clustered_column",
+            "bar_clustered", "clustered_bar", "column_stacked", "stacked_column",
+            "bar_stacked", "stacked_bar",
+        }:
             chart = BarChart()
-        elif chart_key == "line":
+            if "stacked" in chart_key:
+                chart.grouping = "stacked"
+        elif chart_key in {"line", "line_markers", "line_stacked"}:
             chart = LineChart()
-        elif chart_key == "pie":
+        elif chart_key in {"pie", "pie_3d", "doughnut"}:
             chart = PieChart()
         else:
             raise ValueError(f"Unsupported chart type: '{chart_type}'. Use bar, line, or pie.")
@@ -1823,6 +1906,7 @@ class ExcelController:
                         logger.warning(live_sync_warning)
                         open_live_wb = None
 
+            self._ensure_valid_excel_table_headers(wb)
             await asyncio.to_thread(wb.save, str(save_path))
             entry["working_path"] = save_path
             entry["metadata"]["file_path"] = str(save_path)
@@ -2199,7 +2283,34 @@ class ExcelController:
                     ws.column_dimensions[col_letter].width = width
                     applied_widths[col_letter] = width
 
-            for col_spec, raw_width in (op.get("column_widths") or {}).items():
+            raw_col_widths = op.get("column_widths")
+            if isinstance(raw_col_widths, list):
+                start_col_idx = 1
+                range_hint = (
+                    op.get("range")
+                    or op.get("cells")
+                    or op.get("cell_range")
+                    or op.get("range_ref")
+                )
+                if isinstance(range_hint, str) and range_hint.strip():
+                    try:
+                        first_ref = range_hint.split(",")[0].strip().split(":")[0].strip()
+                        col_l, _ = coordinate_from_string(validate_cell_ref(first_ref))
+                        start_col_idx = column_index_from_string(col_l)
+                    except Exception:
+                        start_col_idx = 1
+                raw_col_widths = {
+                    get_column_letter(start_col_idx + idx): width
+                    for idx, width in enumerate(raw_col_widths)
+                    if width is not None
+                }
+            elif raw_col_widths is not None and not isinstance(raw_col_widths, dict):
+                raise ValueError(
+                    "column_widths must be a mapping like {'A': 22, 'B:F': 14} "
+                    "or a list of positive numbers like [22, 14, 14]."
+                )
+
+            for col_spec, raw_width in (raw_col_widths or {}).items():
                 width_val = float(raw_width)
                 if width_val <= 0:
                     raise ValueError(f"Column width for '{col_spec}' must be positive")
@@ -2346,16 +2457,22 @@ class ExcelController:
         ws = self._get_sheet(entry, sheet_name)
         _, _, _, _, normalized_ref = self._resolve_format_bounds(ws, cell_range)
 
-        # Format formula1 cleanly for 'list' validations when passed a Python list of choices
+        # Format formula1 cleanly for 'list' validations (both Python lists and comma-separated strings)
         f1_str: Optional[str] = None
         if formula1 is not None:
             if vtype == "list" and isinstance(formula1, (list, tuple)):
                 joined = ",".join(str(item).replace('"', "") for item in formula1)
                 f1_str = f'"{joined}"'
             else:
-                f1_str = str(formula1)
+                f1_str = str(formula1).strip()
                 if f1_str.startswith("="):
                     f1_str = self._normalize_formula_sheet_refs(wb, f1_str)
+                elif vtype == "list" and f1_str and not (f1_str.startswith('"') and f1_str.endswith('"')):
+                    # Excel OOXML requires literal dropdown lists to be double-quoted ("Base,Upside,Downside");
+                    # leave range references (e.g. "Sheet1!A1:A3" or "$A$1:$A$3") unquoted.
+                    looks_like_range = ("!" in f1_str) or (":" in f1_str and "," not in f1_str)
+                    if not looks_like_range:
+                        f1_str = f'"{f1_str.replace(chr(34), "")}"'
 
         f2_str: Optional[str] = str(formula2) if formula2 is not None else None
         if f2_str and f2_str.startswith("="):

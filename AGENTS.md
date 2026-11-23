@@ -61,12 +61,15 @@ Whenever a quirk or issue **specifically related to Bionic or the local LLM mode
   1. Bionic Version
   2. Model Used
   3. Configuration being used
+- **Grouped by Model**: Organize all entries under model-specific subheadings (`#### <Model Name> (<Format/Quant>)`) so quirks and universal fixes are tracked cleanly per model.
 - **Entry Format**: Keep each entry concise, anonymized, and actionable:
   - `**Environment**: Bionic <version> | Model: <model> | Config: <anonymized relevant settings>`
   - `**Quirk**: <specific Bionic or model behavior observed>`
   - `**Rule / Mitigation**: <how future code, tool schemas, or skills must handle it>`
 
 ### Known Bionic & Model Quirks
+
+#### `Qwen3.6 35B A3B` (`GGUF Q8_0`)
 
 1. **Dropped `workbook_id` in Large `params_json` Payloads**
    - **Environment**: Bionic `1.2.2+3` | Model: `Qwen3.6 35B A3B` (`GGUF Q8_0`) | Config: Context `65536`, Temp `0.3`, Reasoning Budget `2048`, `M365_MCP_PROFILE=EXCEL,COMPACT`
@@ -82,3 +85,41 @@ Whenever a quirk or issue **specifically related to Bionic or the local LLM mode
    - **Environment**: Bionic `1.2.2+3` | Model: `Qwen3.6 35B A3B` (`GGUF Q8_0`) | Config: Context `65536`, Temp `0.3`, Reasoning Budget `2048`, `M365_MCP_PROFILE=EXCEL,COMPACT`
    - **Quirk**: Because Bionic passes MCP arguments inside a double-escaped `params_json` string, Excel formulas or number formats containing literal double quotes (e.g. `=IF(C16>0,"ACCEPT","REJECT")` or `$#,##0;($#,##0);"-"`) require triple escaping (`\\\"`). Local models frequently emit single-escaped `\"`, causing Bionic to reject the call with `params_json must be valid JSON.` before it reaches the MCP server.
    - **Rule / Mitigation**: Keep batch payloads compact (prefer 1 `batch_write_ranges` call per sheet on large models rather than stuffing 3–5 sheets into one giant `params_json`), and avoid unnecessary nested quoted literals in skill examples while keeping standard Excel syntax valid across all MCP clients.
+
+#### `Gemma 4 26B A4B` (`MLX 8bit MoE`)
+
+1. **`read_range(evaluate_formulas=true)` Retry Loop & Mental-Math Hallucination After Live Timeout**
+   - **Environment**: Bionic `1.2.2+3` (`oMLX 0.5.0`) | Model: `Gemma 4 26B A4B` (`MLX 8bit`) | Config: Context `65536`, Temp `0.2`, Top K `40`, Top P `0.95`, Min P `0.05`, Repeat Penalty `1`, `M365_MCP_PROFILE=EXCEL,COMPACT`
+   - **Quirk**: When `excel_live_open` timed out on a macOS modal/Grant Access dialog and returned a generic fallback hint suggesting file-level tools, the model looped 5 times on `read_range(evaluate_formulas=true)` across slightly varied ranges (`F5`, `A1:F5`, `F2:F5`, `B2:F5`) trying to coax evaluated numbers out of uncached `null` cells, then fabricated an incorrect mental sum (`1,340` instead of `1,195`) and leaked internal terms (`AppleScript`, `MCP`).
+   - **Rule / Mitigation**: Keep `excel_live_*` timeout hints in `_error_response()` strictly instructing the model to **stop and ask the user to dismiss/approve the Excel dialog** (never suggest file-level fallback for formula evaluation), and return `uncached_formula_count` + an explicit anti-loop `warning` in `ExcelController.read_range(evaluate_formulas=True)` whenever formula cells are uncached (`null`).
+
+2. **`column_widths` Passed as List + Destructive `write_cell(value=null)` Fallback & Thought-Only Exit**
+   - **Environment**: Bionic `1.2.2+3` (`oMLX 0.5.0`) | Model: `Gemma 4 26B A4B` (`MLX 8bit`) | Config: Context `65536`, Temp `0.2`, Top K `40`, Top P `0.95`, Min P `0.05`, Repeat Penalty `1`, `M365_MCP_PROFILE=EXCEL,COMPACT`
+   - **Quirk**: The model recovers in 1 turn when MCP errors include clear hints, but when `batch_format_workbook` received `column_widths` as a JSON array (`[15, 10, ...]`) and threw a raw `AttributeError` without a hint, the model attempted `write_cell(..., cell="A1", value=null, formatting={"column_width": 15})`, wiping an Excel Table header cell (`A1`) and causing Excel to reject the saved `.xlsx` with `Parameter error (-50)`. On hitting the unrecoverable `-50` error, Bionic + `oMLX` Gemma 4 terminated with a blank/collapsed `thought` block and zero visible text.
+   - **Rule / Mitigation**: Accept `column_widths` in `batch_format_workbook` as **either** a dict (`{"A": 15, "B:F": 12}`) **or** a list (`[15, 10, ...]`, mapped sequentially from the op's range start column or `A`) with a clear `ValueError` hint for invalid types, and run `ExcelController._ensure_valid_excel_table_headers()` before `wb.save()` so OOXML Table headers are always non-empty, non-formula, and unique.
+
+3. **Parameter Alias Loops on `add_excel_table` & `batch_write_ranges` (Formatting-Only / Scalar `value`)**
+   - **Environment**: Bionic `1.2.2+3` (`oMLX 0.5.0`) | Model: `Gemma 4 26B A4B` (`MLX 8bit`) | Config: Context `65536`, Temp `0.2`, Top K `40`, Top P `0.95`, Min P `0.05`, Repeat Penalty `1`, `M365_MCP_PROFILE=EXCEL,COMPACT`
+   - **Quirk**: Repeated `add_excel_table` 7× when an aliased key (`range`) was stripped leaving `data_range=""`, repeated `batch_write_ranges` 5× with formatting-only `number_format` ops (no `data`), and passed scalar `{"cell": "B2", "value": "Base"}` inside `batch_write_ranges`.
+   - **Rule / Mitigation**: Accept `range` alias in `add_excel_table` with explicit parameter-name error hints, redirect formatting-only `batch_write_ranges` ops to `batch_format_workbook` in the error message, and auto-wrap scalar `"value"` as `[[value]]` in `batch_write_ranges`.
+
+4. **Random Premature Bare-`thought` Stop in Multi-Tool Chains (`oMLX 0.5.0`) & Pre-Tool Narration Roleplay**
+   - **Environment**: Bionic `1.2.2+3` (`oMLX 0.5.0`) | Model: `Gemma 4 26B A4B` (`MLX 8bit`) | Config: Context `65536`, Temp `0.2` (and `0.6` test), Top K `40`/`64`, `M365_MCP_PROFILE=EXCEL,COMPACT`
+   - **Quirk**: (a) Across multiple runs, `oMLX 0.5.0` randomly terminated mid-workflow right after a *successful* MCP tool call (Call #1, #10, #13) with a bare `thought` block and zero user-facing output, forcing the user to manually type `"continue"`. (b) Instructing the model to emit short progress narration before tool calls caused it to either loop verbatim in `Reasoning` (at `Temp 0.2`) or roleplay tool calls in prose without calling tools (at `Temp 0.6`).
+   - **Rule / Mitigation**: Keep `ZERO CHATTER` (no pre-tool narration) and `Temp 0.2` for Gemma 4 26B A4B; minimize round-trips via universal parameter aliases so multi-step tasks finish in fewer turns; treat random bare-`thought` stops as an `oMLX` engine UX defect when evaluating model validation.
+
+---
+
+## Model Validation Policy & Tracker
+
+- **Goal**: Make `m365-mac-mcp` work flawlessly across every tested model via universal, backwards-compatible fixes while logging all quirks and fixes **by model** above.
+- **Validation Criterion**: A model is marked **`Validated`** **only** when **100% of the tests in `Model-MCP Stress Test/STRESS_TEST_SUITE.md` pass as explicitly confirmed by the user**. Never mark a model validated based on partial passes or assumptions.
+- **Keep Updated**: Update the tracker below as each phase is confirmed by the user (keep entries anonymized — no personal paths or private config).
+
+| Model | Format / Quant | Dedicated Prompt | Status | Confirmed Passed Phases / Rejection Reason | Validated Date |
+| :--- | :--- | :--- | :---: | :--- | :---: |
+| `Qwen3.6 35B A3B` | `GGUF Q6_K` / `Q8_0` | `Sample Model Config/SYSTEM_PROMPT.md` | `In Progress` | *(Recommended daily driver — pending full suite run)* | — |
+| `Gemma 4 26B A4B` | `MLX 8bit MoE` (`oMLX 0.5.0`) | `Sample Model Config/SYSTEM_PROMPT_GEMMA4_26B_A4B.md` | **`Not Compatible`** | **Rejected:** `oMLX 0.5.0` Gemma 4 token-parser bug — randomly terminates mid-workflow on bare `thought` (forcing manual `continue` with zero feedback) and leaks raw `call:call_mcp_tool{...<\|"\|>...}` control tokens into chat text. | — |
+| `Nemotron 3 Nano Omni` | `GGUF Q8_0` (`llama.cpp`) | `Sample Model Config/SYSTEM_PROMPT_NEMOTRON3_NANO_OMNI.md` | **`Not Compatible`** | **Rejected:** Weak multi-step MCP planning — looped 15× on built-in folder `exists` checks, wrote tables cell-by-cell (`write_cell`), hallucinated file paths instead of calling `create_workbook`, and ignored `.internal/skills` ban. | — |
+| `Qwen3.8 27B` | `MLX 8bit` (`oMLX 0.5.0`, dense) | `Sample Model Config/SYSTEM_PROMPT.md` | **`Not Compatible (Too Slow)`** | **Rejected for interactive use:** Passed 0A-1 with 10/10 accuracy (11 calls, 0 errors), but dense 27B 8-bit on `oMLX` (no `Reasoning Budget` cap) took **16m 50s** for a 2-tab smoke test. | — |
+| `Gemma 4 31B` | `MLX 8bit` | `Sample Model Config/SYSTEM_PROMPT_GEMMA4_31B.md` | `Not Tested` | *(Untested; shares `oMLX 0.5.0` Gemma 4 runtime)* | — |

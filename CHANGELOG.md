@@ -9,6 +9,27 @@ This project follows [Semantic Versioning (`MAJOR.MINOR.PATCH`)](https://semver.
 
 ---
 
+## [v2.3.1] - 2026-11-23
+
+### Fixed
+- **OOXML Data Validation List Quoting (`add_data_validation`):** Automatically double-quotes literal comma-separated list strings (e.g., `"Base,Upside,Downside"` → `'"Base,Upside,Downside"'`) while preserving range references (`Sheet1!A1:A3`, `$A$1:$A$3`), fixing Microsoft Excel `Parameter error (-50)` / corrupt `.xlsx` open failures on string-passed dropdowns.
+- **Excel Table Empty-Header Guard (`_ensure_valid_excel_table_headers`):** Validates and auto-repairs empty, formula, or duplicate OOXML Table header cells right before `wb.save()` so saved workbooks never trigger Excel `-50` file-open corruption.
+- **`batch_format_workbook` `column_widths` List Fallback:** Accepts `column_widths` as either a dict (`{"A": 15, "B:F": 12}`) or a list (`[15, 10, ...]`, mapped sequentially from the op's range start column or `A`), eliminating raw `AttributeError` crashes and returning a clear `ValueError` hint on invalid types.
+- **Anti-Loop Guards & Actionable Error Hints:**
+  - `excel_live_*` timeouts now explicitly instruct stopping to let the user dismiss/approve any Excel modal or **Grant Access** dialog instead of suggesting file-level `read_range` fallback.
+  - `read_range(evaluate_formulas=True)` now returns `uncached_formula_count` + an explicit anti-loop `warning` when formula cells are uncached (`null`).
+  - `batch_write_ranges` redirects formatting-only ops (`number_format`, `styles`, `column_widths`, etc.) to `batch_format_workbook`, and auto-wraps scalar `"value"` / `"values"` / `"data"` entries as 1×1 `[[val]]`.
+  - `add_excel_table` accepts `range` as a fallback alias for `data_range`, defaults `table_name` to `"Table1"`, and names exact required parameters on empty-range errors.
+  - `create_chart` accepts common chart-type aliases (`column`, `column_clustered`, `bar_clustered`, `bar_stacked`, `line_markers`, `pie_3d`, `doughnut`, etc.).
+  - `excel_live_batch_read_ranges` accepts `cell_ref` and `cell` as aliases for `range_ref`.
+
+### Added
+- **Model-Agnostic Stress-Test Suite (`Model-MCP Stress Test/STRESS_TEST_SUITE.md`):** 9-Phase / 12-Chat stress-test battery covering all 82 MCP tools (`EXCEL,COMPACT`, `EXCEL`, and `WORD,POWERPOINT`) and all 7 non-import Finance Skills.
+- **Local Model Compatibility Documentation:** Documented tested & rejected local models (`Gemma 4 26B A4B` MLX on `oMLX 0.5.0`, `Nemotron 3 Nano Omni` GGUF, `Qwen3.8 27B` MLX dense) with root-cause reasons across `README.md`, `docs/HARDWARE_AND_PROFILE_GUIDE.md`, `docs/EXECUTIVE_COMPARISON_MATRIX.md`, and `AGENTS.md`.
+- **Automated Regression Tests:** Expanded suite to **38 passing tests** covering OOXML list quoting, `column_widths` list fallback, Excel Table header repair, uncached-formula warnings, live timeout hints, scalar `value`/`values`, `create_chart` aliases, and `add_excel_table` hints.
+
+---
+
 ## [v2.3.0] - 2026-11-22
 
 ### Added

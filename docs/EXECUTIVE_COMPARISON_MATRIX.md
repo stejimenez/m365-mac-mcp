@@ -18,4 +18,14 @@
 
 ---
 
+### Tested & Not Compatible / Rejected Local Models
+
+| Model | Format / Runtime | Status | Reason |
+| :--- | :--- | :---: | :--- |
+| **`Gemma 4 26B A4B`** | `MLX 8bit MoE` (`oMLX 0.5.0`) | **Not Compatible** | `oMLX 0.5.0` tool-call parser bug: random bare-`thought` mid-workflow stops (forcing manual `"continue"`) and leaked raw `call:call_mcp_tool` control tokens in chat. |
+| **`Nemotron 3 Nano Omni`** | `GGUF Q8_0` (`llama.cpp`) | **Not Compatible** | Weak multi-step MCP planning: 15× folder `exists` loop, cell-by-cell `write_cell` writes, hallucinated paths instead of `create_workbook`, and `.internal/skills` ban violation. |
+| **`Qwen3.8 27B`** | `MLX 8bit` (`oMLX`, dense) | **Not Compatible *(Too Slow)*** | 10/10 accuracy on 0A-1 (11 calls, 0 errors), but dense 27B 8-bit on `oMLX` (no `Reasoning Budget` cap) took **16m 50s** for a 2-tab smoke test. |
+
+---
+
 For the full tier-by-tier breakdown and all 8 `M365_MCP_PROFILE` benchmarks, see [`HARDWARE_AND_PROFILE_GUIDE.md`](HARDWARE_AND_PROFILE_GUIDE.md).

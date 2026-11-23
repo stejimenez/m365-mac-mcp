@@ -16,7 +16,7 @@ description: Rebuild raw company Excel financials (EN/FR/ES) into a new IFRS/FAS
 
 ## 3. Exact m365-mac-mcp Tool Sequence
 1. **Create New 3-Tab Workbook (1 Call):** Call `create_workbook(title=..., sheet_names=["Income Statement", "Balance Sheet", "Cash Flow"])` *(or keep original EN/FR/ES statement tab names if requested)*.
-2. **Populate All 3 Tabs (1 Call):** Call `batch_write_ranges`:
+2. **Populate All 3 Tabs (1 `batch_write_ranges` Call/Sheet — Labels/Inputs + `fill_formula` across formula rows, ZERO mental math):**
    - Preserve every company-specific account name **verbatim** across all available historical years plus a trailing CAGR/Avg column on the Income Statement.
    - Replace every hardcoded subtotal, total, margin (`%`), and CAGR with dynamic Excel formulas; link `Cash Flow!Net Income` to `'Income Statement'!Net Income`.
    - Keep audited historical Cash Flow & Equity input lines faithful to the source filing (do not distort reported CFO when FX/M&A exists), and add explicit **Validation & Reconciliation Check** rows: `Balance Check (=Total Assets - Total L&E)`, `Cash Check (=BS Cash - CF Ending Cash)`, and `NI Link Check`.
@@ -29,4 +29,4 @@ description: Rebuild raw company Excel financials (EN/FR/ES) into a new IFRS/FAS
 
 ## 5. Verification & Output Gate
 Output ONLY a compact **Rebuilt vs. Source Reconciliation Table** (`Metric | Years Verified | Max Delta | Balance Check | Audit`) in plain finance language (EN/FR/ES, never exposing internal tool/skill names), followed by this **Fresh-Chat Handoff Note** (localized to EN/FR/ES):
-> *Saved to `<path>`. Next, you can ask to format it Wall Street style, project multi-year statements, or build a DCF valuation. If the bottom-right **Context** indicator is above ~50%, start a **New Chat** and share this file path for best speed and accuracy.*
+> *Saved to `<path>`. Next, you can ask to format it Wall Street style, project multi-year statements, or build a DCF valuation. If your chat context is above ~50%, start a **New Chat** and share this file path for best speed and accuracy.*

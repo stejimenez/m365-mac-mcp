@@ -2206,7 +2206,13 @@ class AppleScriptBridge:
         for item in ranges:
             if not isinstance(item, dict):
                 raise ValueError("Each range spec must be a dict with 'range_ref'")
-            raw_ref = item.get("range_ref") or item.get("range") or item.get("cell_range")
+            raw_ref = (
+                item.get("range_ref")
+                or item.get("range")
+                or item.get("cell_range")
+                or item.get("cell_ref")
+                or item.get("cell")
+            )
             if not raw_ref:
                 raise ValueError("Each range spec must include 'range_ref' (e.g. 'B2:F16')")
             clean_ref = validate_range_ref(str(raw_ref))

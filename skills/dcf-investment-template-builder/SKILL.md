@@ -18,7 +18,7 @@ description: Build a reusable IFRS/FASB/SOX multi-segment DCF valuation template
 ## 3. Exact m365-mac-mcp Tool Sequence
 1. **Create All 5 Tabs (1 Call):** Call `create_workbook(title=..., sheet_names=["Dashboard", "WACC & Inputs", "Segment Cash Flows", "DCF Valuation", "Sensitivity"])`.
 2. **Add Scenario Control:** Call `add_data_validation(validation_type="list", formula1=["Base", "Bull", "Bear"])` on `Dashboard!B2`.
-3. **Write All 5 Tabs (1 `batch_write_ranges` Call PER Sheet — write Labels/Inputs + `fill_formula` across each repeated formula row/grid, NEVER hand-calculate in `<think>`):**
+3. **Write All 5 Tabs (1 `batch_write_ranges` Call/Sheet — Labels/Inputs + `fill_formula` across repeated formula rows/grids, ZERO mental math):**
    - **`WACC & Inputs`:** CAPM `Ke = Rf + Beta * ERP`, `Kd_after_tax = Kd * (1 - TaxRate)`, `WACC = We*Ke + Wd*Kd_after_tax`, and Base/Bull/Bear drivers.
    - **`Segment Cash Flows`:** Per-segment Revenue, EBITDA, D&A, CapEx, ΔNWC rolling into consolidated totals (`=SUM(...)`).
    - **`DCF Valuation`:** EBIT, Taxes (`IAS 12`/`ASC 740`), NOPAT, `+D&A`, `-CapEx`, `-ΔNWC` → **UFCF**; Discount Factors (optional `-0.5` mid-year toggle); **PV of UFCF**; **Terminal Value (Gordon Growth `=FinalUFCF*(1+g)/(WACC-g)` + Exit Multiple `=FinalEBITDA*Multiple`)**; **EV → Equity Bridge** (`EV - Debt - Leases + Cash - Minority Interest - Preferred = Equity Value`; `Implied Share Price = Equity Value / Diluted Shares`).
@@ -31,4 +31,4 @@ description: Build a reusable IFRS/FASB/SOX multi-segment DCF valuation template
 - **SOX 404:** Single source of truth for inputs on `WACC & Inputs`; zero hardcoded discount factors, Terminal Values, or EV Bridge outputs.
 
 ## 5. Verification & Output Gate
-Run `audit_workbook_formulas` (`clean: true`, `external_links_count: 0`) AND `excel_live_open` + `excel_live_batch_read_ranges` on `Dashboard`, output ONLY a compact Valuation Summary table in plain finance language (never mention internal tool/skill names), and add a 1-line **Fresh-Chat Handoff Note**: *Saved to `<path>`. If the bottom-right **Context** indicator is >50%, start a **New Chat** with this file path for sensitivity tests or an executive brief.*
+Run `audit_workbook_formulas` (`clean: true`, `external_links_count: 0`) AND `excel_live_open` + `excel_live_batch_read_ranges` on `Dashboard`, output ONLY a compact Valuation Summary table in plain finance language (never mention internal tool/skill names), and add a 1-line **Fresh-Chat Handoff Note**: *Saved to `<path>`. If your chat context is >50%, start a **New Chat** with this file path for sensitivity tests or an executive brief.*

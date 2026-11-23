@@ -2090,3 +2090,110 @@ async def test_batch_write_ranges_fill_formula_1d_and_2d_with_formula_guard():
         assert blk["blocked_count"] == 3
     finally:
         await server.close_workbook(wb_id)
+
+
+@pytest.mark.asyncio
+async def test_column_widths_list_table_header_guard_and_uncached_formula_warning(tmp_path: Path):
+    """Verify column_widths list fallback, Excel Table header repair before save,
+    uncached formula anti-loop warning on read_range, and live timeout hint.
+    """
+    created = await server.create_workbook(title="GemmaHardening", sheet_names=["Sales"])
+    wb_id = created["workbook_id"]
+    out_path = tmp_path / "gemma_hardening.xlsx"
+    try:
+        await server.batch_write_ranges(
+            workbook_id=wb_id,
+            operations=[
+                {
+                    "sheet_name": "Sales",
+                    "range": "A1:C3",
+                    "values": [
+                        ["Region", "Q1", "Total"],
+                        ["North", 100, "=SUM(B2:B2)"],
+                        ["South", 80, "=SUM(B3:B3)"],
+                    ],
+                }
+            ],
+        )
+        await server.add_excel_table(wb_id, "Sales", "SalesTbl", "A1:C3")
+
+        # 1. column_widths passed as a list maps sequentially from range start col (or A)
+        bf = await server.batch_format_workbook(
+            workbook_id=wb_id,
+            operations=[
+                {"sheet_name": "Sales", "range": "A1:C1", "column_widths": [18, 12, 14]}
+            ],
+        )
+        assert bf["status"] == "success"
+        ws = server.excel.active_workbooks[wb_id]["workbook_object"]["Sales"]
+        assert ws.column_dimensions["A"].width == 18
+        assert ws.column_dimensions["B"].width == 12
+        assert ws.column_dimensions["C"].width == 14
+
+        # 2. Wipe table header A1 to None -> save_workbook must auto-repair so Excel never rejects (-50)
+        await server.write_cell(wb_id, "Sales", "A1", None)
+        sv = await server.save_workbook(wb_id, str(out_path))
+        assert sv["status"] == "success"
+        assert ws["A1"].value == "Column1"
+
+        # 3. read_range(evaluate_formulas=True) on uncached formulas returns anti-loop warning
+        rr = await server.read_range(wb_id, "Sales", "A1:C3", evaluate_formulas=True)
+        assert rr["status"] == "success"
+        assert rr.get("uncached_formula_count", 0) == 2
+        assert "do NOT retry read_range" in rr.get("warning", "")
+
+        # 4. excel_live_* timeout hint instructs stopping for Excel dialog, NOT file-level fallback
+        err = server._error_response("excel_live_open", TimeoutError("timed out"))
+        assert "Grant Access" in err.get("hint", "")
+        assert "do NOT fall back to file-level read_range" in err.get("hint", "")
+
+        # 5. batch_write_ranges accepts scalar 'value' and redirects formatting-only ops
+        bw_scalar = await server.batch_write_ranges(
+            workbook_id=wb_id,
+            operations=[{"sheet_name": "Sales", "cell": "E1", "value": "Base"}],
+        )
+        assert bw_scalar["status"] == "success"
+        assert ws["E1"].value == "Base"
+
+        bw_fmt_err = await server.batch_write_ranges(
+            workbook_id=wb_id,
+            operations=[{"sheet_name": "Sales", "range": "B2:C3", "number_format": "$#,##0"}],
+        )
+        assert bw_fmt_err["status"] == "error"
+        assert "batch_format_workbook" in bw_fmt_err["error"]
+
+        # 6. add_excel_table accepts 'range' alias and names required params on empty range
+        tbl_err = await server.add_excel_table(workbook_id=wb_id, sheet_name="Sales")
+        assert tbl_err["status"] == "error"
+        assert "data_range" in tbl_err["error"]
+
+        # 7. add_data_validation auto-quotes comma-separated literal lists for valid OOXML
+        dv = await server.add_data_validation(
+            workbook_id=wb_id,
+            sheet_name="Sales",
+            cell_range="E2",
+            validation_type="list",
+            formula1="Base,Upside,Downside",
+        )
+        assert dv["status"] == "success"
+        assert dv["formula1"] == '"Base,Upside,Downside"'
+
+        # 8. Scalar 'values' in batch_write_ranges and 'COLUMN_CLUSTERED' chart alias
+        bw_scalar_vals = await server.batch_write_ranges(
+            workbook_id=wb_id,
+            operations=[{"sheet_name": "Sales", "range": "E3", "values": "Upside"}],
+        )
+        assert bw_scalar_vals["status"] == "success"
+        assert ws["E3"].value == "Upside"
+
+        ch = await server.create_chart(
+            workbook_id=wb_id,
+            sheet_name="Sales",
+            chart_type="COLUMN_CLUSTERED",
+            data_range="A1:C3",
+            chart_title="Alias Test",
+            position="G1",
+        )
+        assert ch["status"] == "success"
+    finally:
+        await server.close_workbook(wb_id)

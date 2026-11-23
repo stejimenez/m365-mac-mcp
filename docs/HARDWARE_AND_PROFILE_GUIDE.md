@@ -45,11 +45,20 @@ This guide provides realistic, benchmark-grounded recommendations for pairing **
 
 ### Tier 3 — 64 GB Unified Memory (M4 Pro / M4 Max or Better) — *Verified Reference*
 - **Memory Reality:** **~54–56 GB** available; zero swap pressure even with Excel, Word, PowerPoint, Bionic, and 65K–128K context open together.
-- **Best Setup (Verified on Mac mini M4 Pro 64 GB):** **`Qwen3.6 35B A3B — Q8_0`** (~38 GB) + `M365_MCP_PROFILE=EXCEL,COMPACT` (or `FULL`) + `Context = 65536` + `Flash Attention = ON` + `Unified + GPU KV Cache = ON` + `Reasoning Budget = 2048` + **V3.4 Full** (see [`Sample Model Config/`](../Sample%20Model%20Config/)).
-- **Alternatives:** **`Qwen3.5/3.6 27B Dense — Q8_0`** (~29 GB) or **`Gemma 4 31B Dense — Q8_0`** (~33 GB) for maximum dense reasoning depth; **`Gemma 4 26B MoE — Q8_0`** (~27 GB) for 128K multi-filing analysis.
-- **Hallucination / Loop Profile (Very Low):** Near-lossless `Q8_0` eliminates 4-bit drift on nested JSON (`batch_format_workbook`, `batch_write_ranges`) and multi-sheet formulas.
+- **Best Setup (Verified on Mac mini M4 Pro 64 GB):** **`Qwen3.6 35B A3B — GGUF Q6_K` (~29 GB, fastest) or `Q8_0` (~38 GB, lossless)** + `M365_MCP_PROFILE=EXCEL,COMPACT` (or `FULL`) + `Context = 65536` + `Flash Attention = ON` + `Unified + GPU KV Cache = ON` + `Reasoning Budget = 2048` + `Repeat Penalty = Off` + **V3.4 Full** (see [`Sample Model Config/`](../Sample%20Model%20Config/)).
+- **Hallucination / Loop Profile (Very Low):** `Q6_K`/`Q8_0` MoE eliminates 4-bit drift on nested JSON (`batch_format_workbook`, `batch_write_ranges`) and multi-sheet formulas while keeping interactive MoE speed.
 
-> **MLX vs. GGUF Tip:** Prefer **MLX** inside LM Studio when an official MLX quant with verified tool-calling templates is available (~10–20% faster prefill/decode on Apple Silicon). **GGUF (`llama.cpp`)** remains the most mature fallback for fine-grained `Q8_0`/`Q6_K` and KV-cache quantization controls.
+> **GGUF (`llama.cpp`) vs. MLX (`oMLX`) Tip:** For **multi-turn MCP tool-calling in Bionic / LM Studio**, prefer **GGUF (`llama.cpp`)** — it delivers more reliable tool-call parsing, faster multi-turn prompt-cache prefill, and unlocks **`Reasoning Budget`** caps (`1024–2048`) so models stay concise and responsive.
+
+### Tested & Not Compatible / Rejected Local Models
+
+The following local models were stress-tested against `Model-MCP Stress Test/STRESS_TEST_SUITE.md` and marked **Not Compatible** for production `m365-mac-mcp` workflows:
+
+| Model | Format / Runtime | Status | Reason |
+| :--- | :--- | :---: | :--- |
+| **`Gemma 4 26B A4B`** | `MLX 8bit MoE` (`oMLX 0.5.0`) | **Not Compatible** | Unstable Gemma 4 special-token / tool-call parsing under `oMLX 0.5.0`: randomly stops mid-workflow with bare `thought` (zero user feedback, requiring manual `"continue"`) and leaks raw `call:call_mcp_tool{...<\|"\|>...}` control tokens into chat text. |
+| **`Nemotron 3 Nano Omni`** | `GGUF Q8_0` (`llama.cpp 2.80.1`) | **Not Compatible** | Insufficient multi-step MCP planning and instruction-following discipline: looped 15× on built-in folder existence checks, wrote tables cell-by-cell (`write_cell`), tried to open non-existent/hallucinated file paths instead of calling `create_workbook`, and ignored system-prompt restrictions against probing `.internal/skills`. |
+| **`Qwen3.8 27B`** | `MLX 8bit` (`oMLX 0.5.0`, dense) | **Not Compatible *(Too Slow)*** | Passed Phase 0A-1 with 10/10 institutional accuracy (11 calls, 0 errors, exact `$1,195` live recalc), but dense 27B 8-bit on `oMLX` (no `Reasoning Budget` cap) took **16m 50s** for a 2-tab smoke test — impractical for interactive multi-phase workflows. |
 
 ---
 

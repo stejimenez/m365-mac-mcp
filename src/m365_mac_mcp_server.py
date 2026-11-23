@@ -262,7 +262,15 @@ def _error_response(action: str, exc: Exception) -> Dict[str, Any]:
     if isinstance(exc, PermissionError) or "-1743" in msg:
         hint = "Grant Automation permission in System Settings > Privacy & Security > Automation, or use file-level tools instead of *_live_*."
     elif isinstance(exc, TimeoutError):
-        hint = "Check Microsoft Word/Excel for an open modal dialog, or use file-level tools (open_workbook/open_document)."
+        if action.startswith("excel_live_"):
+            hint = (
+                "Microsoft Excel is likely showing a modal or 'Grant Access' dialog. "
+                "STOP and ask the user to dismiss/approve the Excel dialog before retrying live; "
+                "do NOT fall back to file-level read_range to evaluate newly written formulas "
+                "(file-level reads return null for uncached formulas) and do NOT calculate formulas mentally."
+            )
+        else:
+            hint = "Check Microsoft Word/Excel for an open modal or 'Grant Access' dialog, then retry."
     elif isinstance(exc, FileNotFoundError):
         hint = "Verify the file path exists (supports ~ expansion and spaces) before retrying."
     elif isinstance(exc, ValueError):
@@ -1291,6 +1299,7 @@ async def add_excel_table(
     sheet_name: Optional[str] = None,
     table_name: str = "",
     data_range: str = "",
+    range: Optional[str] = None,
     style_name: str = "TableStyleMedium9",
     show_first_column: bool = False,
     show_last_column: bool = False,
@@ -1299,11 +1308,18 @@ async def add_excel_table(
 ) -> Dict[str, Any]:
     """Create a structured Excel Table (TableStyleLight*/Medium*/Dark*) with banded row/column toggles. workbook_id auto-resolves if 1 workbook is active."""
     try:
+        effective_range = (data_range or range or "").strip()
+        if not effective_range:
+            raise ValueError(
+                "add_excel_table requires data_range (e.g. data_range='A1:F5'), "
+                "sheet_name (e.g. 'Quarterly Sales'), and table_name (e.g. 'SalesTable')."
+            )
+        effective_name = (table_name or "").strip() or "Table1"
         return await excel.add_table(
             workbook_id=excel._resolve_workbook_id(workbook_id),
             sheet_name=sheet_name,
-            table_name=table_name,
-            data_range=data_range,
+            table_name=effective_name,
+            data_range=effective_range,
             style_name=style_name,
             show_first_column=show_first_column,
             show_last_column=show_last_column,
@@ -1868,7 +1884,7 @@ async def check_office_status() -> Dict[str, Any]:
         versions = await applescript.get_office_version_info()
         return sanitize_for_json({
             "status": "running",
-            "server_version": "2.3.0",
+            "server_version": "2.3.1",
             "word_available": versions["word"]["installed"],
             "excel_available": versions["excel"]["installed"],
             "powerpoint_available": versions["powerpoint"]["installed"],
