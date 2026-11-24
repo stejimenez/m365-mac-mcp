@@ -18,9 +18,11 @@ A comprehensive, **9-Phase (0A–0C Baseline + 1–8 Institutional) / 12-Chat** 
    - **Excel Server (Active for Phases 0A–0B and 1–8):** `M365_MCP_PROFILE=EXCEL,COMPACT` *(25 tools)*, `M365_MCP_LIVE_SYNC=AUTO`, `M365_MCP_FORMULA_GUARD=literals_only`. *(Temporarily switch to `M365_MCP_PROFILE=EXCEL` only if running optional Phase 0B, then switch back to `EXCEL,COMPACT` before Phase 1.)*
    - **Word & PowerPoint Server (Active for Phase 0C and Phase 7 Only):** `M365_MCP_PROFILE=WORD,POWERPOINT` *(33 tools)* — keep **OFF** (or on-demand / hidden unless mentioned) during Phases 0A–0B, 1–6, and 8 so Excel context stays lean.
    - *(If your MCP client uses a single server entry instead of two, switch `M365_MCP_PROFILE` to `FULL` or `EXCEL,WORD` for Phases 0C and 7 and switch back to `EXCEL,COMPACT` afterward.)*
-4. **Optional Live Wire Telemetry (Client-Agnostic):**
+4. **Disable Shell Commands in Your MCP Client (Recommended for Bionic):**
+   - In Bionic's chat composer (next to `+`), set **Command approvals → `Off` (*Don't allow shell commands*)** so the model cannot bypass `m365-mac-mcp` with ad-hoc bash/Python scripts.
+5. **Optional Live Wire Telemetry (Client-Agnostic):**
    - Set `M365_MCP_DEBUG_LOG=/path/to/mcp_debug_private.jsonl` on your MCP server to record every tool call, arguments, millisecond latency, warnings, and errors independently of your MCP client UI.
-5. **Fresh-Chat Rule:**
+6. **Fresh-Chat Rule:**
    - Start a **brand-new chat** for each chat block below (`Chat 0A` through `Chat 9`, 12 chats total) so context stays clean and fresh-chat handoffs are tested realistically.
 
 ---
@@ -136,11 +138,12 @@ A comprehensive, **9-Phase (0A–0C Baseline + 1–8 Institutional) / 12-Chat** 
 > `Use US GAAP with Straight-Line depreciation over 6 years. Year-0 CapEx is $25M, plus we already spent $2M last year on R&D feasibility studies for this line. Year-1 revenue is $10M growing 12% per year, 38% EBITDA margin, 25% corporate tax rate, 10.5% WACC, 8% NWC of revenue (fully recovered in Year 6), and $4M pre-tax salvage value at Year 6 (fully depreciated to $0 book value). Build it, check it live in Excel, and give me the Go/No-Go.`
 
 **Hammer Checks:**
-1. **Sunk Cost Exclusion:** Excludes the \$2M prior R&D spend from Year-0 CapEx (depreciates \$25M / 6 = \$4.167M/yr) and flags why in plain finance language.
-2. **Year-0 NPV Rule:** Keeps Year 0 *outside* `=NPV(...)` (e.g., `=NPV(WACC, C13:H13) + B13`).
-3. **After-Tax Salvage Formula:** Computes after-tax salvage via formula (`=Salvage - (Salvage - EndingBV) * TaxRate` → \$3.0M), not hardcoded.
-4. **Batch & `fill_formula` Discipline:** Uses `create_workbook(sheet_names=[...])`, 1 `batch_write_ranges` call per sheet (ideally with `fill_formula`), `create_chart`, and `batch_format_workbook` — no cell-by-cell write loops and no Python/shell bypasses.
-5. **Live Verification:** Saves first, runs formula audit (`0` errors, `0` external links), and reads evaluated KPIs live from Microsoft Excel (`excel_live_open` + `excel_live_batch_read_ranges`) — zero mental calculation.
+1. **Dedicated `Assumptions` Tab (Pure Inputs Only):** Creates 4 tabs (`Executive Summary`, `Assumptions`, `Project Cash Flows`, `Sensitivity & Charts`). `Assumptions` holds **ONLY raw blue input variables** (zero calculated KPIs/formulas); `Executive Summary` holds **ONLY linked KPI outputs**; all formulas reference `Assumptions!$B$...`.
+2. **Sunk Cost Exclusion:** Excludes the \$2M prior R&D spend from Year-0 CapEx (depreciates \$25M / 6 = \$4.167M/yr) and flags why in plain finance language.
+3. **Year-0 NPV Rule:** Keeps Year 0 *outside* `=NPV(...)` (e.g., `=NPV(Assumptions!$B$..., 'Project Cash Flows'!C13:H13) + 'Project Cash Flows'!B13`).
+4. **After-Tax Salvage Formula:** Computes after-tax salvage via formula (`=Salvage - (Salvage - EndingBV) * TaxRate` → \$3.0M), not hardcoded.
+5. **Batch & `fill_formula` Discipline:** Uses `create_workbook(sheet_names=[...])`, 1 `batch_write_ranges` call per sheet (with 2D arrays / `fill_formula`), `create_chart`, and `batch_format_workbook` — no cell-by-cell write loops and no Python/shell bypasses.
+6. **Live Verification:** Saves first, runs formula audit (`0` errors, `0` external links), and reads evaluated KPIs live from Microsoft Excel (`excel_live_open` + `excel_live_batch_read_ranges`) — zero mental calculation and zero `#VALUE!` in `Executive Summary` or `Sensitivity & Charts`.
 
 ---
 
@@ -151,7 +154,7 @@ A comprehensive, **9-Phase (0A–0C Baseline + 1–8 Institutional) / 12-Chat** 
 > `Build a reusable 5-year IFRS DCF valuation template for Apex Industrial in ~/Desktop/MCP_StressTest/Apex_DCF.xlsx ($M). Two segments: Cloud Software (Year 1 $120M, growing 18%/yr, 35% EBITDA margin, 3% D&A, 4% CapEx, 2% ΔNWC of rev) and Robotics Hardware (Year 1 $200M, growing 6%/yr, 18% EBITDA margin, 6% D&A, 8% CapEx, 5% ΔNWC of rev). Use CAPM WACC: Risk-Free 4.2%, ERP 5.5%, Beta 1.15, Pre-tax Cost of Debt 6.0%, Tax Rate 24%, Target Debt-to-Total-Capital 25%. Include Base/Bull/Bear scenario switching (Bull +300 bps growth / +200 bps margin; Bear -300 bps / -200 bps), mid-year discounting, both Gordon Growth (2.5% terminal growth) and Exit Multiple (11.0x EV/EBITDA) terminal values, an EV-to-Equity bridge ($120M financial debt, $35M IFRS 16 lease liabilities, $45M cash, $10M minority interest, 50M diluted shares), 2-way sensitivity tables, and a Dashboard chart.`
 
 **Hammer Checks:**
-1. All 5 tabs (`Dashboard`, `WACC & Inputs`, `Segment Cash Flows`, `DCF Valuation`, `Sensitivity`) built completely with zero `TODO` / placeholder cells.
+1. **Dedicated `Assumptions` Tab (Pure Inputs Only):** All 5 tabs (`Dashboard`, `Assumptions`, `Segment Cash Flows`, `DCF Valuation`, `Sensitivity`) built completely with zero `TODO` / placeholder cells. `Assumptions` contains **ONLY raw blue input drivers** (no calculated WACC, EV, or share-price results on `Assumptions`; CAPM WACC is computed on `DCF Valuation`).
 2. **`IFRS 16` Parity:** Lease liabilities (\$35M) are subtracted in the EV-to-Equity Bridge consistently with IFRS EBITDA.
 3. **Interactive Controls:** `add_data_validation` creates a working `Base,Bull,Bear` dropdown on `Dashboard!B2`, and formulas dynamically recalculate when switched.
 4. **Live Recalc Verification:** Both implied share prices (Gordon Growth and Exit Multiple) are read live from Excel with zero `#REF!`, `#NAME?`, `#VALUE!`, or `#DIV/0!`.
@@ -171,9 +174,10 @@ A comprehensive, **9-Phase (0A–0C Baseline + 1–8 Institutional) / 12-Chat** 
 > `Create a full US GAAP 3-statement model for NovaCorp in ~/Desktop/MCP_StressTest/NovaCorp_3Stmt.xlsx ($M) with Assumptions, Income Statement, Balance Sheet, and Cash Flow tabs. Historicals: FY24 Revenue $400, COGS $240, OpEx $80, D&A $20, Interest $10, Tax 25%, Net Income $37.5; FY25 Revenue $440, COGS $260, OpEx $88, D&A $22, Interest $10, Tax 25%, Net Income $45.0. FY25 Ending Balance Sheet: Cash $60, AR $55, Inventory $45, Net PP&E $220 (Total Assets $380); AP $40, Long-Term Debt $160, Common Stock $100, Retained Earnings $80 (Total L&E $380). Project FY26–FY30 with a Base/Bull/Bear dropdown on Assumptions. Base drivers: Revenue +8%/yr (Bull +12%, Bear +3%), COGS 58% of rev, OpEx 19% of rev, D&A 5% of rev, CapEx 6% of rev, Interest 6.25% on prior-year debt (debt stays flat at $160M), Tax 25%, Dividends 20% of Net Income, DSO 45 days, DIO 62 days, DPO 55 days (365-day basis). Link Balance Sheet Cash to Cash Flow Ending Cash and verify live in Excel that Balance Check = 0 for every year.`
 
 **Hammer Checks:**
-1. All cross-sheet references with spaces are properly single-quoted (`'Income Statement'!`, `'Balance Sheet'!`, `'Cash Flow'!`).
-2. **Zero Plugs:** `Balance Check = Total Assets - Total L&E = 0.00` live in Excel across FY25–FY30.
-3. **Manual Verification in Excel:** Open `NovaCorp_3Stmt.xlsx` and flip the `Assumptions` dropdown from `Base` → `Bull` → `Bear`. Every year's `Balance Check` must remain `0.00`. *(Leave `NovaCorp_3Stmt.xlsx` open in Excel for Phase 4.)*
+1. **Dedicated `Assumptions` Tab (Pure Inputs Only):** `Assumptions` holds ONLY raw blue input drivers + the `Base`/`Bull`/`Bear` scenario dropdown (zero calculated statement totals or KPIs on `Assumptions`), and all 3 statements reference `Assumptions!$B$...`.
+2. All cross-sheet references with spaces are properly single-quoted (`'Income Statement'!`, `'Balance Sheet'!`, `'Cash Flow'!`).
+3. **Zero Plugs:** `Balance Check = Total Assets - Total L&E = 0.00` live in Excel across FY25–FY30.
+4. **Manual Verification in Excel:** Open `NovaCorp_3Stmt.xlsx` and flip the `Assumptions` dropdown from `Base` → `Bull` → `Bear`. Every year's `Balance Check` must remain `0.00`. *(Leave `NovaCorp_3Stmt.xlsx` open in Excel for Phase 4.)*
 
 ---
 

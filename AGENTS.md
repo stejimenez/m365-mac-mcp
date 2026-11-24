@@ -32,12 +32,25 @@ Whenever updating GitHub for this repository, **always** cut a versioned release
 
 > **Note**: Do not commit, tag, push, or publish a release until the user explicitly requests pushing/updating GitHub.
 
+### Finance Skill Versioning Policy
+
+- **Stable Slugs:** Keep YAML `name:` strictly equal to the folder slug (e.g., `capex-project-analyzer`) — never embed version numbers in `name:` so Bionic/CLI clients upgrade in-place without creating duplicates or breaking references.
+- **Project-Anchored Independent Skill Versions (`<ProjectVer><Letter>`):** Every `skills/*/SKILL.md` MUST carry an independent version in three synchronized places (verified by `pytest`):
+  1. YAML frontmatter `version: X.Y.Z[A-Z]` (e.g., `2.3.1A`)
+  2. Prefix `[vX.Y.Z[A-Z]]` at the start of YAML `description:` (visible directly in Bionic's Skills UI)
+  3. Suffix `(vX.Y.Z[A-Z])` on the `# H1` heading (visible in model read traces)
+- **Create & Bump Rule:** Whenever ANY `skills/*/SKILL.md` is **created**, assign `<CurrentProjectVer>A` (e.g., `2.3.1A`); whenever ANY existing `skills/*/SKILL.md` is **modified**, bump **that skill's** letter (`2.3.1A` → `2.3.1B`, or `<NewProjectVer>A` on a new project release) while leaving untouched skills at their existing version, and always sync the **Finance Skills Suite Version** and catalog table in `skills/README.md`.
+
 ---
 
 ## Privacy & Personal Configuration Policy
 
 - **Never Upload Personal Config**: Never commit, push, or upload the user's personal configuration, username, local file paths, device names, or private environment details to GitHub unless you first **ask for explicit approval and explain why it needs to be shared**, or unless the user explicitly asks you to share it.
 - Keep all personal/local environment tracking strictly in gitignored local files (such as `.agents/rules/local_environment_private.md`, matched by `*_private*` in `.gitignore`) for optimization and troubleshooting only.
+
+## MCP Project Directory Write-Protection Policy
+
+- **Never Write User Deliverables Into the MCP Server Project Folder:** Every file-writing MCP tool (`save_workbook`, `save_document`, `save_presentation`, `excel_live_save`, `word_live_save`, and any future save/export tool) MUST validate output paths via `resolve_file_path(..., for_write=True)` / `assert_safe_write_path()` so neither bare relative filenames (resolved against server CWD) nor explicit paths inside the MCP server's own installation/project directory can ever be written by an MCP client or model. Always return a `PermissionError` directing the caller to an explicit user directory (e.g., `~/Desktop/...` or `~/Documents/...`).
 
 ---
 
@@ -124,7 +137,7 @@ Whenever a quirk or issue **specifically related to Bionic or the local LLM mode
 
 | Model | Format / Quant | Dedicated Prompt | Status | Confirmed Passed Phases / Rejection Reason | Validated Date |
 | :--- | :--- | :--- | :---: | :--- | :---: |
-| `Qwen3.6 35B A3B` | `GGUF Q6_K` / `Q8_0` | `Sample Model Config/SYSTEM_PROMPT.md` | `In Progress` | `0A`, `0B` *(all 50 Excel tools passed, 0 errors, 1-shot)* | — |
+| `Qwen3.6 35B A3B` | `GGUF Q6_K` / `Q8_0` | `Sample Model Config/SYSTEM_PROMPT.md` | `In Progress` | `0A`, `0B`, `0C` *(all 82 Excel/Word/PPT tools passed, 0 errors)* | — |
 | `Gemma 4 26B A4B` | `MLX 8bit MoE` (`oMLX 0.5.0`) | `Sample Model Config/SYSTEM_PROMPT_GEMMA4_26B_A4B.md` | **`Not Compatible`** | **Rejected:** `oMLX 0.5.0` Gemma 4 token-parser bug — randomly terminates mid-workflow on bare `thought` (forcing manual `continue` with zero feedback) and leaks raw `call:call_mcp_tool{...<\|"\|>...}` control tokens into chat text. | — |
 | `Nemotron 3 Nano Omni` | `GGUF Q8_0` (`llama.cpp`) | `Sample Model Config/SYSTEM_PROMPT_NEMOTRON3_NANO_OMNI.md` | **`Not Compatible`** | **Rejected:** Weak multi-step MCP planning — looped 15× on built-in folder `exists` checks, wrote tables cell-by-cell (`write_cell`), hallucinated file paths instead of calling `create_workbook`, and ignored `.internal/skills` ban. | — |
 | `Qwen3.8 27B` | `MLX 8bit` (`oMLX 0.5.0`, dense) | `Sample Model Config/SYSTEM_PROMPT.md` | **`Compatible (Slow)`** | **Compatible, but slow for interactive use:** Passed 0A-1 with 10/10 accuracy (11 calls, 0 errors, exact `$1,195` live), but dense 27B 8-bit on `oMLX` (no `Reasoning Budget` cap) took **16m 50s** for a 2-tab smoke test *(not yet full-suite validated)*. | — |

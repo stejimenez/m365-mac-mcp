@@ -16,11 +16,14 @@ from pptx.enum.text import PP_ALIGN
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.dml.color import RGBColor
 
+import re
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from integrations.applescript_bridge import AppleScriptBridge
+from utils.config import open_office_template, resolve_template_path
 from utils.logger import setup_logger
+from utils.validators import resolve_file_path
 
 logger = setup_logger(__name__)
 
@@ -53,34 +56,47 @@ class PowerPointController:
         try:
             presentation_id = str(uuid.uuid4())
             
-            # Create presentation using python-pptx
-            if template_path and Path(template_path).exists():
-                prs = Presentation(template_path)
+            # Create presentation using python-pptx (explicit template -> M365_MCP_PPT_TEMPLATE -> 16:9 blank)
+            resolved_template = resolve_template_path(
+                template_path,
+                default_env_var="M365_MCP_PPT_TEMPLATE",
+                allowed_extensions=(".pptx", ".potx"),
+            )
+            if resolved_template is not None:
+                prs = Presentation(open_office_template(resolved_template))
             else:
                 prs = Presentation()
+                # Modern 16:9 widescreen default instead of python-pptx legacy 4:3
+                prs.slide_width = Inches(13.333)
+                prs.slide_height = Inches(7.5)
             
-            # Set title if first slide exists
+            # Set title if first slide exists, otherwise add Title Slide
             if prs.slides:
                 title_slide = prs.slides[0]
                 if title_slide.shapes.title:
                     title_slide.shapes.title.text = title
             else:
-                # Add title slide
                 title_slide_layout = prs.slide_layouts[0]  # Title slide layout
-                slide = prs.slides.add_slide(title_slide_layout)
-                slide.shapes.title.text = title
+                title_slide = prs.slides.add_slide(title_slide_layout)
+                if title_slide.shapes.title:
+                    title_slide.shapes.title.text = title
             
-            # Save temporary file
+            # Save temporary file (do NOT auto-open internal temp UUID files in PowerPoint —
+            # concurrent writes from subsequent add_slide/add_text calls trigger PowerPoint's
+            # "Repair" dialog and macOS sandbox Grant Access prompts).
             temp_file = self.temp_dir / f"{presentation_id}.pptx"
             prs.save(str(temp_file))
             
-            # Try to open in PowerPoint via AppleScript
-            applescript_success = False
-            try:
-                await self.applescript.open_powerpoint_file(str(temp_file))
-                applescript_success = True
-            except Exception as e:
-                logger.warning(f"Could not open in PowerPoint app: {e}")
+            # Register Slide 1 so callers can immediately add subtitle/text/notes to it
+            now_ts = asyncio.get_event_loop().time()
+            first_slide_id = str(uuid.uuid4())
+            first_slide_meta = {
+                "slide_id": first_slide_id,
+                "presentation_id": presentation_id,
+                "layout": "Title Slide",
+                "index": 0,
+                "created_at": now_ts,
+            }
             
             # Store presentation metadata
             presentation_data = {
@@ -89,14 +105,22 @@ class PowerPointController:
                 "theme": theme,
                 "file_path": str(temp_file),
                 "slide_count": len(prs.slides),
-                "applescript_available": applescript_success,
-                "created_at": asyncio.get_event_loop().time()
+                "first_slide_id": first_slide_id,
+                "slides": [{"slide_id": first_slide_id, "index": 0, "layout": "Title Slide"}],
+                "created_at": now_ts,
             }
+            if resolved_template is not None:
+                presentation_data["template_used"] = str(resolved_template)
             
             self.active_presentations[presentation_id] = {
                 "metadata": presentation_data,
                 "pptx_object": prs,
-                "slides": {}
+                "slides": {
+                    first_slide_id: {
+                        "metadata": first_slide_meta,
+                        "slide_object": title_slide,
+                    }
+                },
             }
             
             logger.info(f"Created presentation: {title} ({presentation_id})")
@@ -172,6 +196,11 @@ class PowerPointController:
             
             # Update presentation metadata
             self.active_presentations[presentation_id]["metadata"]["slide_count"] = len(prs.slides)
+            self.active_presentations[presentation_id]["metadata"].setdefault("slides", []).append({
+                "slide_id": slide_id,
+                "index": slide_index,
+                "layout": layout,
+            })
             
             # Save updated presentation
             temp_file = self.active_presentations[presentation_id]["metadata"]["file_path"]
@@ -216,36 +245,46 @@ class PowerPointController:
             if not slide_obj:
                 raise ValueError(f"Slide {slide_id} not found")
             
-            # Add text based on placeholder type
-            if placeholder == "title" and slide_obj.shapes.title:
-                text_frame = slide_obj.shapes.title.text_frame
+            # Add text based on placeholder type (never let 'content'/'subtitle' overwrite title!)
+            ph = (placeholder or "content").strip().lower()
+            title_shape = slide_obj.shapes.title
+            if ph == "title" and title_shape:
+                text_frame = title_shape.text_frame
                 text_frame.text = text
-            elif placeholder == "content":
-                # Find content placeholder or add text box
-                content_placeholder = None
-                for shape in slide_obj.shapes:
+            elif ph in {"content", "body", "subtitle"}:
+                target_placeholder = None
+                for shape in slide_obj.placeholders:
+                    if title_shape is not None and shape == title_shape:
+                        continue
                     if hasattr(shape, "text_frame") and shape.text_frame:
-                        content_placeholder = shape
+                        target_placeholder = shape
                         break
-                
-                if content_placeholder:
-                    text_frame = content_placeholder.text_frame
-                    text_frame.text = text
+                if target_placeholder:
+                    cleaned_text = text
+                    if ph in {"content", "body"}:
+                        # Strip redundant leading bullet glyphs so PowerPoint's native
+                        # content placeholder bullets never render as double bullets ("• • Item").
+                        cleaned_text = "\n".join(
+                            re.sub(r"^\s*(?:[•●◦▪▫–—\-*]|\d+\.)\s+", "", line)
+                            if re.match(r"^\s*[•●◦▪▫\-*]\s+", line)
+                            else line
+                            for line in text.splitlines()
+                        )
+                    text_frame = target_placeholder.text_frame
+                    text_frame.text = cleaned_text
                 else:
-                    # Add text box
                     left = Inches(1)
-                    top = Inches(1.5)
+                    top = Inches(1.8 if ph != "subtitle" else 3.8)
                     width = Inches(8)
-                    height = Inches(5)
+                    height = Inches(4.5 if ph != "subtitle" else 1.2)
                     textbox = slide_obj.shapes.add_textbox(left, top, width, height)
                     text_frame = textbox.text_frame
                     text_frame.text = text
             else:
-                # Add as text box
                 left = Inches(1)
-                top = Inches(1.5)
+                top = Inches(1.8)
                 width = Inches(8)
-                height = Inches(5)
+                height = Inches(4.5)
                 textbox = slide_obj.shapes.add_textbox(left, top, width, height)
                 text_frame = textbox.text_frame
                 text_frame.text = text
@@ -308,8 +347,8 @@ class PowerPointController:
                 # Download image (simplified - would need proper download logic)
                 raise NotImplementedError("URL image download not yet implemented")
             else:
-                # Local file
-                image_path = Path(image_source)
+                # Local file (expand ~ cleanly)
+                image_path = Path(image_source).expanduser().resolve()
                 if not image_path.exists():
                     raise FileNotFoundError(f"Image file not found: {image_source}")
             
@@ -409,7 +448,7 @@ class PowerPointController:
                 raise ValueError(f"Presentation {presentation_id} not found")
             
             prs = self.active_presentations[presentation_id]["pptx_object"]
-            save_path = Path(file_path).expanduser().resolve()
+            save_path = resolve_file_path(file_path, must_exist=False, for_write=True)
             
             # Ensure directory exists
             save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -453,42 +492,30 @@ class PowerPointController:
             formatting: Formatting options
         """
         try:
-            paragraph = text_frame.paragraphs[0]
-            
-            # Font size
-            if "font_size" in formatting:
-                paragraph.font.size = Pt(formatting["font_size"])
-            
-            # Font name
-            if "font_name" in formatting:
-                paragraph.font.name = formatting["font_name"]
-            
-            # Bold
-            if "bold" in formatting:
-                paragraph.font.bold = formatting["bold"]
-            
-            # Italic
-            if "italic" in formatting:
-                paragraph.font.italic = formatting["italic"]
-            
-            # Color
-            if "color" in formatting:
-                color = formatting["color"]
-                if isinstance(color, str) and color.startswith("#"):
-                    # Convert hex to RGB
-                    hex_color = color.lstrip("#")
-                    rgb = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
-                    paragraph.font.color.rgb = RGBColor(*rgb)
-            
-            # Alignment
-            if "alignment" in formatting:
-                align_map = {
-                    "left": PP_ALIGN.LEFT,
-                    "center": PP_ALIGN.CENTER,
-                    "right": PP_ALIGN.RIGHT,
-                    "justify": PP_ALIGN.JUSTIFY
-                }
-                if formatting["alignment"] in align_map:
+            align_map = {
+                "left": PP_ALIGN.LEFT,
+                "center": PP_ALIGN.CENTER,
+                "right": PP_ALIGN.RIGHT,
+                "justify": PP_ALIGN.JUSTIFY,
+            }
+            color_val = formatting.get("color") or formatting.get("font_color")
+            rgb_color = None
+            if isinstance(color_val, str) and color_val.lstrip("#") and len(color_val.lstrip("#")) == 6:
+                hex_color = color_val.lstrip("#")
+                rgb_color = RGBColor(*(int(hex_color[i:i+2], 16) for i in (0, 2, 4)))
+
+            for paragraph in text_frame.paragraphs:
+                if "font_size" in formatting:
+                    paragraph.font.size = Pt(formatting["font_size"])
+                if "font_name" in formatting:
+                    paragraph.font.name = formatting["font_name"]
+                if "bold" in formatting:
+                    paragraph.font.bold = formatting["bold"]
+                if "italic" in formatting:
+                    paragraph.font.italic = formatting["italic"]
+                if rgb_color is not None:
+                    paragraph.font.color.rgb = rgb_color
+                if "alignment" in formatting and formatting["alignment"] in align_map:
                     paragraph.alignment = align_map[formatting["alignment"]]
             
         except Exception as e:

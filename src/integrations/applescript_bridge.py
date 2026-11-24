@@ -30,7 +30,14 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from utils.logger import setup_logger
-from utils.validators import resolve_file_path, sanitize_for_json, validate_cell_ref, validate_range_ref
+from utils.validators import (
+    get_grant_access_timeout,
+    is_within_trusted_project_dir,
+    resolve_file_path,
+    sanitize_for_json,
+    validate_cell_ref,
+    validate_range_ref,
+)
 
 logger = setup_logger(__name__)
 
@@ -251,8 +258,8 @@ class AppleScriptBridge:
 
         script = """
         on run argv
-            set us to character id 31
-            set rs to character id 30
+            set uSep to character id 31
+            set rSep to character id 30
             set outRows to {}
             set hasRows to false
             set activeName to ""
@@ -310,7 +317,7 @@ class AppleScriptBridge:
                                 if (activeFull is not "" and dFull is activeFull) or (activeName is not "" and dName is activeName) then
                                     set isAct to "true"
                                 end if
-                                set end of outRows to (dName & us & dFull & us & dPath & us & dSaved & us & (pCount as text) & us & isAct)
+                                set end of outRows to (dName & uSep & dFull & uSep & dPath & uSep & dSaved & uSep & (pCount as text) & uSep & isAct)
                                 set hasRows to true
                             end if
                         end try
@@ -359,7 +366,7 @@ class AppleScriptBridge:
                                     if (activeFull is not "" and dFull is activeFull) or (activeName is not "" and dName is activeName) then
                                         set isAct to "true"
                                     end if
-                                    set end of outRows to (dName & us & dFull & us & dPath & us & dSaved & us & (pCount as text) & us & isAct)
+                                    set end of outRows to (dName & uSep & dFull & uSep & dPath & uSep & dSaved & uSep & (pCount as text) & uSep & isAct)
                                     set hasRows to true
                                 end if
                             end try
@@ -415,7 +422,7 @@ class AppleScriptBridge:
                         if (activeFull is not "" and dFull is activeFull) or (activeName is not "" and dName is activeName) then
                             set isAct to "true"
                         end if
-                        set end of outRows to (dName & us & dFull & us & dPath & us & dSaved & us & (pCount as text) & us & isAct)
+                        set end of outRows to (dName & uSep & dFull & uSep & dPath & uSep & dSaved & uSep & (pCount as text) & uSep & isAct)
                         set hasRows to true
                     end if
                 end repeat
@@ -452,14 +459,14 @@ class AppleScriptBridge:
                             if rawCount is not missing value then set pCount to rawCount
                         end try
                         if dName is not "" or dFull is not "" then
-                            set end of outRows to (dName & us & dFull & us & dPath & us & dSaved & us & (pCount as text) & us & "true")
+                            set end of outRows to (dName & uSep & dFull & uSep & dPath & uSep & dSaved & uSep & (pCount as text) & uSep & "true")
                         end if
                     end try
                 end tell
             end if
 
             set prevDelims to AppleScript's text item delimiters
-            set AppleScript's text item delimiters to rs
+            set AppleScript's text item delimiters to rSep
             set joinedOut to outRows as text
             set AppleScript's text item delimiters to prevDelims
             return joinedOut
@@ -504,6 +511,32 @@ class AppleScriptBridge:
                 })
         return sanitize_for_json(docs)
 
+    async def _open_via_launchservices(
+        self,
+        app_name: str,
+        resolved: Path,
+        activate: bool = False,
+    ) -> None:
+        """Open a trusted Project Working Folder file via macOS LaunchServices (`/usr/bin/open`).
+
+        LaunchServices grants the sandboxed Office app a security-scoped token for that exact file
+        so macOS does not show a Grant Access dialog. ONLY invoked for files strictly inside the
+        active client/Bionic Project Working Folder.
+        """
+        cmd = ["/usr/bin/open"]
+        if not activate:
+            cmd.append("-g")
+        cmd.extend(["-a", app_name, str(resolved)])
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=15.0)
+        if proc.returncode != 0:
+            err_txt = stderr_bytes.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"LaunchServices open failed ({proc.returncode}): {err_txt}")
+
     async def open_word_file(
         self,
         file_path: str,
@@ -512,6 +545,57 @@ class AppleScriptBridge:
     ) -> Dict[str, Any]:
         """Open an existing Word document (.docx/.doc/.rtf) in live Microsoft Word."""
         resolved = resolve_file_path(file_path, must_exist=True)
+        target_str = str(resolved)
+        target_name_low = resolved.name.lower()
+
+        # 1. Instant return if already open in Word (seamless recovery after Grant Access click)
+        try:
+            if await self.is_app_running(self.word_app):
+                for doc in await self.list_open_word_documents():
+                    doc_full = str(doc.get("full_name") or "")
+                    doc_name = str(doc.get("name") or "")
+                    if doc_name.lower() == target_name_low or (
+                        doc_full.startswith("/") and str(Path(doc_full).resolve()) == target_str
+                    ):
+                        if activate:
+                            await self.execute_applescript('tell application "Microsoft Word" to activate', timeout=10.0)
+                        return {
+                            "status": "success",
+                            "document_name": doc_name or resolved.name,
+                            "file_path": target_str,
+                            "read_only": read_only,
+                            "already_open": True,
+                            "method": "already_open+applescript",
+                        }
+        except Exception:
+            pass
+
+        # 2. Strictly scoped to active client/Bionic Project Working Folder ONLY (waives Grant Access inside project)
+        if not read_only and is_within_trusted_project_dir(resolved):
+            try:
+                await self._open_via_launchservices(self.word_app, resolved, activate=activate)
+                deadline = asyncio.get_running_loop().time() + 8.0
+                while asyncio.get_running_loop().time() < deadline:
+                    await asyncio.sleep(0.3)
+                    if not await self.is_app_running(self.word_app):
+                        continue
+                    for doc in await self.list_open_word_documents():
+                        doc_name = str(doc.get("name") or "")
+                        if doc_name.lower() == target_name_low:
+                            return {
+                                "status": "success",
+                                "document_name": doc_name,
+                                "file_path": target_str,
+                                "read_only": False,
+                                "trusted_project_dir": True,
+                                "method": "launchservices+applescript",
+                            }
+            except Exception as exc:
+                logger.warning(f"LaunchServices open_word_file fallback to AppleScript: {exc}")
+
+        # 3. Everywhere outside the Project Working Folder (or read_only=True): standard AppleScript so macOS asks Grant Access
+        # Keep fallback <= 15s inside Project Folder (worst-case 8+15=23s, well below 60s client timeout)
+        open_timeout = get_grant_access_timeout() if not is_within_trusted_project_dir(resolved) else 15.0
         script = """
         on run argv
             set posixPath to item 1 of argv
@@ -528,13 +612,13 @@ class AppleScriptBridge:
         """
         doc_name = await self.execute_applescript(
             script,
-            args=[str(resolved), "true" if read_only else "false", "true" if activate else "false"],
-            timeout=30.0,
+            args=[target_str, "true" if read_only else "false", "true" if activate else "false"],
+            timeout=open_timeout,
         )
         return {
             "status": "success",
             "document_name": doc_name,
-            "file_path": str(resolved),
+            "file_path": target_str,
             "read_only": read_only,
             "method": "applescript",
         }
@@ -581,9 +665,9 @@ class AppleScriptBridge:
         on run argv
             set targetName to item 1 of argv
             set incTables to (item 2 of argv) is "true"
-            set us to character id 31
-            set rs to character id 30
-            set gs to character id 29
+            set uSep to character id 31
+            set rSep to character id 30
+            set gSep to character id 29
             tell application "Microsoft Word"
                 if (count of documents) is 0 then
                     error "No open Word documents"
@@ -627,18 +711,18 @@ class AppleScriptBridge:
                                 end try
                                 set end of cellStrings to cText
                             end repeat
-                            set AppleScript's text item delimiters to us
+                            set AppleScript's text item delimiters to uSep
                             set end of rowStrings to (cellStrings as text)
                         end repeat
-                        set AppleScript's text item delimiters to rs
+                        set AppleScript's text item delimiters to rSep
                         set end of tableBlocks to (rowStrings as text)
                     end repeat
                 end if
 
-                set AppleScript's text item delimiters to gs
+                set AppleScript's text item delimiters to gSep
                 set tablesJoined to tableBlocks as text
-                set metaJoined to docName & us & docFull & us & docSaved & us & (selStart as text) & us & (selEnd as text) & us & selText
-                return metaJoined & gs & fullText & gs & tablesJoined
+                set metaJoined to docName & uSep & docFull & uSep & docSaved & uSep & (selStart as text) & uSep & (selEnd as text) & uSep & selText
+                return metaJoined & gSep & fullText & gSep & tablesJoined
             end tell
         end run
         """
@@ -704,6 +788,12 @@ class AppleScriptBridge:
             mode: 'append' | 'insert_at_selection' | 'prepend' | 'replace_all'.
             add_newline: Append a trailing paragraph break when mode is append/prepend.
         """
+        mode_aliases = {
+            "insert": "insert_at_selection",
+            "replace": "replace_all",
+            "overwrite": "replace_all",
+        }
+        mode = mode_aliases.get((mode or "append").strip().lower(), (mode or "append").strip().lower())
         valid_modes = {"append", "insert_at_selection", "prepend", "replace_all"}
         if mode not in valid_modes:
             raise ValueError(f"mode must be one of {sorted(valid_modes)}")
@@ -817,7 +907,7 @@ class AppleScriptBridge:
         """Save a live Word document in-place or Save As (.docx, .pdf, .rtf, .txt, .doc)."""
         resolved_path = ""
         if file_path:
-            p = resolve_file_path(file_path, must_exist=False)
+            p = resolve_file_path(file_path, must_exist=False, for_write=True)
             p.parent.mkdir(parents=True, exist_ok=True)
             resolved_path = str(p)
 
@@ -1062,6 +1152,92 @@ class AppleScriptBridge:
     ) -> Dict[str, Any]:
         """Open an existing Excel file (.xlsx/.xlsm/.csv) in live Microsoft Excel."""
         resolved = resolve_file_path(file_path, must_exist=True)
+        target_str = str(resolved)
+
+        # 1. Instant return if already open in Excel (seamless recovery after user clicks Grant Access)
+        try:
+            existing = await self.find_open_excel_workbook_by_path(target_str)
+            if existing is not None:
+                wb_name = str(existing.get("name") or resolved.name)
+                calc_script = """
+                on run argv
+                    set wbTarget to item 1 of argv
+                    set shouldActivate to (item 2 of argv) is "true"
+                    tell application "Microsoft Excel"
+                        if shouldActivate then activate
+                        try
+                            calculate
+                        end try
+                        return name of active sheet of workbook wbTarget
+                    end tell
+                end run
+                """
+                active_sh = ""
+                try:
+                    active_sh = await self.execute_applescript(
+                        calc_script,
+                        args=[wb_name, "true" if activate else "false"],
+                        timeout=15.0,
+                    )
+                except Exception:
+                    active_sh = str(existing.get("active_sheet") or "")
+                return {
+                    "status": "success",
+                    "workbook_name": wb_name,
+                    "active_sheet": active_sh,
+                    "file_path": target_str,
+                    "read_only": read_only,
+                    "already_open": True,
+                    "method": "already_open+applescript",
+                }
+        except Exception:
+            pass
+
+        # 2. Strictly scoped to active client/Bionic Project Working Folder ONLY (waives Grant Access inside project)
+        if not read_only and is_within_trusted_project_dir(resolved):
+            try:
+                await self._open_via_launchservices(self.excel_app, resolved, activate=activate)
+                deadline = asyncio.get_running_loop().time() + 10.0
+                while asyncio.get_running_loop().time() < deadline:
+                    await asyncio.sleep(0.3)
+                    found = await self.find_open_excel_workbook_by_path(target_str)
+                    if found is not None:
+                        wb_name = str(found.get("name") or resolved.name)
+                        calc_script = """
+                        on run argv
+                            set wbTarget to item 1 of argv
+                            tell application "Microsoft Excel"
+                                try
+                                    calculate
+                                end try
+                                return name of active sheet of workbook wbTarget
+                            end tell
+                        end run
+                        """
+                        active_sh = ""
+                        try:
+                            active_sh = await self.execute_applescript(
+                                calc_script,
+                                args=[wb_name],
+                                timeout=15.0,
+                            )
+                        except Exception:
+                            active_sh = str(found.get("active_sheet") or "")
+                        return {
+                            "status": "success",
+                            "workbook_name": wb_name,
+                            "active_sheet": active_sh,
+                            "file_path": target_str,
+                            "read_only": False,
+                            "trusted_project_dir": True,
+                            "method": "launchservices+applescript",
+                        }
+            except Exception as exc:
+                logger.warning(f"LaunchServices open_excel_file fallback to AppleScript: {exc}")
+
+        # 3. Everywhere outside the Project Working Folder (or read_only=True): standard AppleScript so macOS asks Grant Access
+        # Keep fallback <= 15s inside Project Folder (worst-case 10+15=25s, well below 60s/90s client timeouts)
+        open_timeout = get_grant_access_timeout() if not is_within_trusted_project_dir(resolved) else 15.0
         script = """
         on run argv
             set posixPath to item 1 of argv
@@ -1090,15 +1266,15 @@ class AppleScriptBridge:
         """
         raw = await self.execute_applescript(
             script,
-            args=[str(resolved), "true" if read_only else "false", "true" if activate else "false"],
-            timeout=30.0,
+            args=[target_str, "true" if read_only else "false", "true" if activate else "false"],
+            timeout=open_timeout,
         )
         parts = raw.split(_US)
         return {
             "status": "success",
             "workbook_name": parts[0] if parts else "",
             "active_sheet": parts[1] if len(parts) > 1 else "",
-            "file_path": str(resolved),
+            "file_path": target_str,
             "read_only": read_only,
             "method": "applescript",
         }
@@ -2632,7 +2808,7 @@ class AppleScriptBridge:
         """Save a live Excel workbook in-place or Save As (.xlsx, .xlsm, .csv, .pdf)."""
         resolved_path = ""
         if file_path:
-            p = resolve_file_path(file_path, must_exist=False)
+            p = resolve_file_path(file_path, must_exist=False, for_write=True)
             p.parent.mkdir(parents=True, exist_ok=True)
             resolved_path = str(p)
 

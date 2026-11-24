@@ -1,9 +1,10 @@
 ---
 name: live-what-if-runner
-description: Run non-destructive live Excel sensitivity stress tests with native recalculation and automatic baseline revert.
+version: 2.3.1A
+description: "[v2.3.1A] Run non-destructive live Excel sensitivity stress tests with native recalculation and automatic baseline revert."
 ---
 
-# Live Excel What-If & Sensitivity Runner
+# Live Excel What-If & Sensitivity Runner (v2.3.1A)
 
 ## 1. Trigger & Scope
 - **Triggers:** *"Run a ±10% Revenue stress test"*, *"Test WACC ±100 bps live in Excel without saving"*, *"Check live 3-statement sensitivity."*

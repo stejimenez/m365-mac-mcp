@@ -11,10 +11,10 @@
 | **Recommended MCP Profile** | **`EXCEL,COMPACT`** *(mandatory, 25 tools)* | **`EXCEL,COMPACT`** *(daily)* or **`EXCEL`** / **`FULL`** | **`EXCEL,COMPACT`** *(fastest)* or **`FULL`** *(all 82 tools)* |
 | **Safe Context Length** | `16,384` *(9B)* / `12,288` *(14B)* | `32,768` | `65,536` – `131,072` |
 | **KV Cache Quantization** | **Required:** `K=Q8_0, V=Q8_0` | **Recommended:** `K=Q8_0, V=Q8_0` | Optional (`FP16` or `Q8_0` both fit easily) |
-| **Reasoning Budget** | `1024` (`Preserve Thinking = ON`) | `1536–2048` (`Preserve Thinking = ON`) | `2048` (`Preserve Thinking = ON`, `Presence Penalty = 0.2`) |
+| **Reasoning Budget** | `1024` (`Preserve Thinking = OFF`) | `1536–2048` (`Preserve Thinking = OFF`) | `2048` (`Preserve Thinking = OFF`, `Presence Penalty = 0.2`) |
 | **System Prompt** | **V3.4 Lite** *(~450t + 2-phase chunking)* | **V3.4 Full** *(~840t)* | **V3.4 Full** *(~840t)* |
 | **Expected Decode Speed** | **~20–32 tok/s** *(9B)* / ~12–16 *(14B)* | **~20–30 tok/s** *(35B MoE)* / **35–50** *(gpt-oss-20b)* | **~22–32 tok/s** *(`Q6_K`)* / **~18–26** *(`Q8_0`)* |
-| **Hallucination / Loop Risk** | **Moderate** *(mitigated by chunking + Formula Guard)* | **Low–Moderate** | **Very Low** *(`Q6_K`/`Q8_0` + `Preserve Thinking = ON`)* |
+| **Hallucination / Loop Risk** | **Moderate** *(mitigated by chunking + Formula Guard)* | **Low–Moderate** | **Very Low** *(`Q6_K`/`Q8_0` + MCP `cell_map` & live skill loader)* |
 
 ---
 

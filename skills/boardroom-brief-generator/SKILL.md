@@ -1,9 +1,10 @@
 ---
 name: boardroom-brief-generator
-description: Turn live-recalculated Excel KPIs into a SOX-traceable executive Word/PDF memo or PowerPoint deck via m365-mac-mcp.
+version: 2.3.1A
+description: "[v2.3.1A] Turn live-recalculated Excel KPIs into a SOX-traceable executive Word/PDF memo or PowerPoint deck via m365-mac-mcp."
 ---
 
-# Boardroom Brief Generator (Excel → Word / PDF / PowerPoint)
+# Boardroom Brief Generator (Excel → Word / PDF / PowerPoint) (v2.3.1A)
 
 ## 1. Trigger & Scope
 - **Triggers:** *"Turn this Excel model into a 1-page CFO memo"*, *"Create an executive Word/PDF brief and PowerPoint summary from this workbook."*

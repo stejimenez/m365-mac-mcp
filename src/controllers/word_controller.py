@@ -26,8 +26,15 @@ from docx.shared import Inches, Pt, RGBColor
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from integrations.applescript_bridge import AppleScriptBridge
+from utils.config import open_office_template, resolve_template_path
 from utils.logger import setup_logger
-from utils.validators import resolve_file_path, sanitize_for_json
+from utils.validators import (
+    assert_safe_write_path,
+    get_client_project_dir,
+    is_within_trusted_project_dir,
+    resolve_file_path,
+    sanitize_for_json,
+)
 
 logger = setup_logger(__name__)
 
@@ -95,9 +102,14 @@ class WordController:
         self._evict_if_needed()
         document_id = str(uuid.uuid4())
 
-        if template_path:
-            tpl = resolve_file_path(template_path, must_exist=True, extensions=[".docx", ".dotx"])
-            doc = await asyncio.to_thread(Document, str(tpl))
+        tpl = resolve_template_path(
+            template_path,
+            default_env_var="M365_MCP_WORD_TEMPLATE",
+            allowed_extensions=(".docx", ".dotx"),
+        )
+        if tpl is not None:
+            tpl_source = open_office_template(tpl)
+            doc = await asyncio.to_thread(Document, tpl_source)
         else:
             doc = Document()
 
@@ -135,6 +147,8 @@ class WordController:
             "opened_in_word": opened_in_app,
             "created_at": time.time(),
         }
+        if tpl is not None:
+            metadata["template_used"] = str(tpl)
         if open_note:
             metadata["note"] = open_note
 
@@ -786,13 +800,13 @@ class WordController:
         fmt = format.lower().lstrip(".")
 
         if file_path:
-            save_path = resolve_file_path(file_path, must_exist=False)
+            save_path = resolve_file_path(file_path, must_exist=False, for_write=True)
         else:
             if entry["metadata"].get("is_temporary", True):
                 raise ValueError(
                     "Document has no saved path yet; provide file_path to save."
                 )
-            save_path = Path(entry["working_path"])
+            save_path = assert_safe_write_path(Path(entry["working_path"]))
 
         if not save_path.suffix:
             save_path = save_path.with_suffix(f".{fmt}")
@@ -804,19 +818,34 @@ class WordController:
             entry["metadata"]["file_path"] = str(save_path)
             entry["metadata"]["is_temporary"] = False
             logger.info(f"Saved Word document to {save_path}")
-            return {
+            out: Dict[str, Any] = {
                 "status": "success",
                 "document_id": document_id,
                 "file_path": str(save_path),
                 "format": "docx",
             }
+            if get_client_project_dir() is not None and not is_within_trusted_project_dir(save_path):
+                out["grant_access_notice"] = (
+                    "Saved outside the active Project Working Folder; opening this file live in Microsoft Word "
+                    "may prompt the user for macOS Grant Access."
+                )
+            return out
 
         if fmt in ("pdf", "rtf", "txt", "doc"):
             # Persist current docx first, then export cleanly via live Microsoft Word AppleScript.
             # NOTE: Microsoft Word 16.x rejects `save as` on read_only=True documents.
             await self._save_working_copy(entry)
+            export_staging: Optional[Path] = None
+            source_for_export = Path(entry["working_path"])
+            in_trusted_project = is_within_trusted_project_dir(save_path)
+            if in_trusted_project and not is_within_trusted_project_dir(source_for_export):
+                # Stage hidden copy inside the trusted Project Working Folder so LaunchServices
+                # avoids triggering a macOS Grant Access dialog on a /var/folders temp file.
+                export_staging = save_path.parent / f".m365_export_stage_{uuid.uuid4()}.docx"
+                await asyncio.to_thread(doc.save, str(export_staging))
+                source_for_export = export_staging
             open_res = await self.applescript.open_word_file(
-                str(entry["working_path"]), read_only=False, activate=False
+                str(source_for_export), read_only=False, activate=False
             )
             live_name = open_res["document_name"]
             try:
@@ -832,6 +861,11 @@ class WordController:
                     )
                 except Exception:
                     pass
+                if export_staging and export_staging.exists():
+                    try:
+                        export_staging.unlink()
+                    except Exception:
+                        pass
             return {
                 "status": "success",
                 "document_id": document_id,

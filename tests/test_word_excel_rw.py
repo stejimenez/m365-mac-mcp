@@ -1681,11 +1681,24 @@ def test_all_finance_skills_valid_schema_size_and_compliance():
     )
     excel_compact_tools = set(json.loads(compact_out))
 
+    skills_readme = (skills_root / "README.md").read_text(encoding="utf-8")
+    assert "**Finance Skills Suite Version:**" in skills_readme, "skills/README.md missing Finance Skills Suite Version"
+
     for p in skill_files:
         txt = p.read_text(encoding="utf-8")
         size_bytes = len(txt.encode("utf-8"))
         assert 2048 <= size_bytes <= 4096, f"{p.parent.name} size {size_bytes}B outside 2-4 KB target"
         assert txt.startswith("---\nname:") and "\ndescription:" in txt, f"{p.parent.name} missing YAML frontmatter"
+        ver_match = re.search(r"^version:\s*(\d+\.\d+\.\d+[A-Z])\s*$", txt, re.MULTILINE)
+        assert ver_match, f"{p.parent.name} missing YAML 'version: X.Y.Z[A-Z]' (e.g. 2.3.1A)"
+        skill_ver = ver_match.group(1)
+        assert f"[v{skill_ver}]" in txt.split("---", 2)[1], (
+            f"{p.parent.name} description must start with '[v{skill_ver}]' for Bionic UI visibility"
+        )
+        assert f"(v{skill_ver})" in txt, f"{p.parent.name} H1 heading must include '(v{skill_ver})'"
+        assert f"`{skill_ver}`" in skills_readme and f"{p.parent.name}/SKILL.md" in skills_readme, (
+            f"skills/README.md catalog must list {p.parent.name} at version `{skill_ver}`"
+        )
         for idx in range(1, 6):
             assert f"## {idx}." in txt, f"{p.parent.name} missing section ## {idx}."
         assert "IFRS" in txt and "FASB" in txt and "SOX" in txt, f"{p.parent.name} missing IFRS/FASB/SOX compliance"
@@ -2206,5 +2219,734 @@ async def test_column_widths_list_table_header_guard_and_uncached_formula_warnin
         assert bf_single_w["status"] == "success"
         assert ws.column_dimensions["B"].width == 16
         assert ws.column_dimensions["C"].width == 16
+
+        # 10. batch_write_ranges parses 'Sheet!A1' prefixes AND top-level sheet_name default
+        await server.add_worksheet(wb_id, "Project Cash Flows")
+        bw_prefixed = await server.batch_write_ranges(
+            workbook_id=wb_id,
+            operations=[
+                {"range": "Project Cash Flows!A1", "value": "PCF Header"},
+                {"range": "'Project Cash Flows'!B1", "value": 123},
+            ],
+        )
+        assert bw_prefixed["status"] == "success"
+        assert bw_prefixed["results"][0]["sheet_name"] == "Project Cash Flows"
+        assert bw_prefixed["results"][1]["sheet_name"] == "Project Cash Flows"
+        bw_default = await server.batch_write_ranges(
+            workbook_id=wb_id,
+            sheet_name="Project Cash Flows",
+            operations=[{"range": "C1", "value": 456}],
+        )
+        assert bw_default["status"] == "success"
+        assert bw_default["results"][0]["sheet_name"] == "Project Cash Flows"
+        pcf_ws = server.excel.active_workbooks[wb_id]["workbook_object"]["Project Cash Flows"]
+        assert pcf_ws["A1"].value == "PCF Header"
+        assert pcf_ws["B1"].value == 123
+        assert pcf_ws["C1"].value == 456
     finally:
         await server.close_workbook(wb_id)
+
+
+@pytest.mark.asyncio
+async def test_corporate_template_env_vars_and_ppt_widescreen_double_bullet_fix(tmp_path, monkeypatch):
+    """Verify M365_MCP_TEMPLATES_DIR, M365_MCP_PPT_TEMPLATE, M365_MCP_WORD_TEMPLATE, 16:9 default & double-bullet strip."""
+    from docx import Document as DocxDocument
+    from pptx import Presentation as PptxPresentation
+    from pptx.util import Inches
+    from controllers.powerpoint_controller import PowerPointController
+    from controllers.word_controller import WordController
+
+    tpl_dir = tmp_path / "Corporate_Templates"
+    tpl_dir.mkdir()
+
+    # Create sample corporate Word & PPT templates
+    word_tpl = tpl_dir / "Corp_Memo.docx"
+    d = DocxDocument()
+    d.add_paragraph("CORPORATE HEADER TEMPLATE")
+    d.save(str(word_tpl))
+
+    ppt_tpl = tpl_dir / "Corp_Deck.pptx"
+    p = PptxPresentation()
+    p.slide_width = Inches(13.333)
+    p.slide_height = Inches(7.5)
+    s0 = p.slides.add_slide(p.slide_layouts[0])
+    s0.shapes.title.text = "Template Title"
+    p.save(str(ppt_tpl))
+
+    # 1. Without env vars: PPT defaults to 16:9 widescreen, registers first_slide_id,
+    #    doesn't overwrite title on placeholder='content', and strips duplicate bullets.
+    monkeypatch.delenv("M365_MCP_TEMPLATES_DIR", raising=False)
+    monkeypatch.delenv("M365_MCP_PPT_TEMPLATE", raising=False)
+    monkeypatch.delenv("M365_MCP_WORD_TEMPLATE", raising=False)
+
+    ppt_ctrl = PowerPointController()
+    meta = await ppt_ctrl.create_presentation(title="Q4 Overview")
+    assert meta["first_slide_id"]
+    assert "template_used" not in meta
+    prs = ppt_ctrl.active_presentations[meta["presentation_id"]]["pptx_object"]
+    assert abs(prs.slide_width.inches - 13.333) < 0.01
+    assert abs(prs.slide_height.inches - 7.5) < 0.01
+
+    s2 = await ppt_ctrl.add_slide(meta["presentation_id"], layout="Title and Content")
+    await ppt_ctrl.add_text(s2["slide_id"], "Key Regional Totals", placeholder="title")
+    await ppt_ctrl.add_text(s2["slide_id"], "• North: $510M\n- South: $375M\n* West: $320M", placeholder="content")
+    slide2_obj = ppt_ctrl.active_presentations[meta["presentation_id"]]["slides"][s2["slide_id"]]["slide_object"]
+    assert slide2_obj.shapes.title.text == "Key Regional Totals"
+    body_text = [sh.text_frame.text for sh in slide2_obj.placeholders if sh != slide2_obj.shapes.title][0]
+    assert body_text == "North: $510M\nSouth: $375M\nWest: $320M"
+
+    # 2. With M365_MCP_TEMPLATES_DIR + M365_MCP_PPT_TEMPLATE + M365_MCP_WORD_TEMPLATE
+    monkeypatch.setenv("M365_MCP_TEMPLATES_DIR", str(tpl_dir))
+    monkeypatch.setenv("M365_MCP_PPT_TEMPLATE", "Corp_Deck.pptx")
+    monkeypatch.setenv("M365_MCP_WORD_TEMPLATE", "Corp_Memo.docx")
+
+    meta_tpl = await ppt_ctrl.create_presentation(title="Board Deck")
+    assert meta_tpl["template_used"] == str(ppt_tpl.resolve())
+
+    word_ctrl = WordController()
+    w_meta = await word_ctrl.create_document(title="CFO Brief")
+    assert w_meta["template_used"] == str(word_tpl.resolve())
+    w_read = await word_ctrl.read_document(w_meta["document_id"], include_full_text=True)
+    assert "CORPORATE HEADER TEMPLATE" in w_read["full_text"]
+    await word_ctrl.close_document(w_meta["document_id"])
+
+    # 3. Malformed numeric env vars safely fall back to ServerConfig defaults
+    from utils.config import Config
+    monkeypatch.setenv("M365_MCP_APPLESCRIPT_TIMEOUT", "30s")
+    monkeypatch.setenv("M365_MCP_MAX_WORKBOOKS", "not_a_number")
+    cfg = Config(config_file=str(tmp_path / "nonexistent_config.json"))
+    assert cfg.settings.applescript_timeout == 30.0
+    assert cfg.settings.max_workbooks == 20
+
+
+@pytest.mark.asyncio
+async def test_universal_write_coercion_cell_map_range_mismatch_and_live_save_guard(tmp_path, monkeypatch):
+    """Verify Fixes A, B, C: formatted-number & empty-blank coercion, cell_map echo, range spill warning, and excel_live_save dirty guard."""
+    wb = await server.create_workbook(
+        title="Universal Fixes Test",
+        sheet_names=["Assumptions", "Cash Flows"],
+    )
+    wb_id = wb["workbook_id"]
+    out_xlsx = tmp_path / "CapEx_Universal.xlsx"
+    try:
+        # 1. Fix B + Fix A (cell_map): Formatted strings auto-coerced to numeric + formats, "" -> None, cell_map returned
+        res_assump = await server.batch_write_ranges(
+            workbook_id=wb_id,
+            operations=[{
+                "sheet_name": "Assumptions",
+                "range": "A1:B9",
+                "data": [
+                    ["Parameter", "Value"],
+                    ["Project Life", "6"],
+                    ["Year-0 CapEx", "$25,000,000"],
+                    ["Salvage Adjustment", "($4,000,000)"],
+                    ["WACC", "10.5%"],
+                    ["Tax Rate", "25%"],
+                    ["ZIP Code", "00123"],
+                    ["Unit Label", "$510M"],
+                    ["Blank Note", ""],
+                ],
+            }],
+        )
+        assert res_assump["status"] == "success"
+        ws_a = server.excel.active_workbooks[wb_id]["workbook_object"]["Assumptions"]
+        assert ws_a["B2"].value == 6 and isinstance(ws_a["B2"].value, int)
+        assert ws_a["B3"].value == 25000000 and "$" in ws_a["B3"].number_format
+        assert ws_a["B4"].value == -4000000 and "$" in ws_a["B4"].number_format
+        assert ws_a["B5"].value == 0.105 and ws_a["B5"].number_format == "0.0%"
+        assert ws_a["B6"].value == 0.25 and ws_a["B6"].number_format == "0.0%"
+        # Preserves leading-zero IDs and unit-suffixed strings as text
+        assert ws_a["B7"].value == "00123" and isinstance(ws_a["B7"].value, str)
+        assert ws_a["B8"].value == "$510M" and isinstance(ws_a["B8"].value, str)
+        # Empty string normalized to true blank None (prevents #VALUE! in arithmetic)
+        assert ws_a["B9"].value is None
+        # Ground-truth cell_map echoed for compact Assumptions sheet
+        cmap = res_assump["results"][0].get("cell_map") or {}
+        assert "B3" in cmap and "Year-0 CapEx" in cmap["B3"]
+        assert "B5" in cmap and "WACC" in cmap["B5"]
+
+        # 2. Fix A (Range-shape mismatch warning): 8 cols written to B1:H2 (7 cols) -> immediate warning
+        res_spill = await server.batch_write_ranges(
+            workbook_id=wb_id,
+            operations=[{
+                "sheet_name": "Cash Flows",
+                "range": "B1:H2",
+                "data": [
+                    ["Year", 0, 1, 2, 3, 4, 5, 6],
+                    ["Revenue", 0, 100, 112, 125, 140, 157, 176],
+                ],
+            }],
+        )
+        assert res_spill["status"] == "success"
+        assert res_spill["results"][0]["range"] == "B1:I2"
+        assert res_spill.get("warnings"), "Expected range shape mismatch warning on B1:H2 -> B1:I2"
+        assert "B1:I2" in res_spill["warnings"][0]
+
+        # 3. Fix C: excel_live_save blocks when matching in-memory workbook has unsaved dirty edits
+        monkeypatch.setenv("M365_MCP_LIVE_SYNC", "off")
+        await server.save_workbook(wb_id, file_path=str(out_xlsx))
+        # Make an unsaved in-memory edit
+        await server.write_cell(wb_id, "Assumptions", "B2", "7")
+        assert server.excel.active_workbooks[wb_id]["dirty"] is True
+
+        live_save_res = await server.excel_live_save(
+            workbook_name=out_xlsx.name,
+            file_path=str(out_xlsx),
+        )
+        assert live_save_res["status"] == "error"
+        assert live_save_res["error_type"] == "UnsavedInMemoryEditsError"
+        assert "save_workbook" in live_save_res["hint"]
+    finally:
+        await server.close_workbook(wb_id)
+
+
+@pytest.mark.asyncio
+async def test_hardening_status_skill_loader_save_linter_and_fill_formulas_expansion(tmp_path, monkeypatch):
+    """Verify Upgrades #1, #2, #3: check_office_status(skill_name), save_workbook linter, fill_formulas expansion & cell_formats redirect."""
+    # 1. Upgrade #1: check_office_status returns registered_tools + live finance_skills catalog and loads full SKILL.md on demand
+    st_menu = await server.check_office_status()
+    assert st_menu["status"] == "running"
+    assert "create_workbook" in st_menu["profile"]["registered_tools"]
+    assert len(st_menu["finance_skills"]["available"]) >= 9
+    assert any(s["name"] == "capex-project-analyzer" and s["version"] for s in st_menu["finance_skills"]["available"])
+
+    st_loaded = await server.check_office_status(skill_name="capex-project-analyzer")
+    assert st_loaded["loaded_skill"]["name"] == "capex-project-analyzer"
+    assert st_loaded["loaded_skill"]["version"]
+    assert "Project Cash Flows" in st_loaded["loaded_skill"]["content"]
+
+    st_missing = await server.check_office_status(skill_name="nonexistent-skill-xyz")
+    assert "skill_error" in st_missing and len(st_missing["finance_skills"]) >= 9
+
+    # 2. Upgrade #3: plural fill_formulas expands cleanly without wiping formulas to None, and cell_formats redirects cleanly
+    monkeypatch.setenv("M365_MCP_LIVE_SYNC", "off")
+    wb = await server.create_workbook(title="Hardening Test", sheet_names=["Assumptions", "EmptyTab"])
+    wb_id = wb["workbook_id"]
+    out_xlsx = tmp_path / "Hardening_Linter.xlsx"
+    try:
+        await server.batch_write_ranges(
+            workbook_id=wb_id,
+            operations=[{
+                "sheet_name": "Assumptions",
+                "range": "A1:B6",
+                "data": [
+                    ["Item", "Value"],
+                    ["CapEx", 25000000],
+                    ["Rev", 10000000],
+                    ["Growth", 0.12],
+                    ["WACC", 0.105],
+                    ["Calc", "=B2+B3"],
+                ],
+            }],
+        )
+        # Plural fill_formulas alongside dummy blank values should expand cleanly to Formula -> Formula update
+        ff_res = await server.batch_write_ranges(
+            workbook_id=wb_id,
+            operations=[{
+                "range": "Assumptions!B6",
+                "values": [[""]],
+                "fill_formulas": [{"range": "Assumptions!B6", "formula": "=B2*B4"}],
+            }],
+        )
+        assert ff_res["status"] == "success"
+        ws = server.excel.active_workbooks[wb_id]["workbook_object"]["Assumptions"]
+        assert ws["B6"].value == "=B2*B4"
+
+        # Formatting-only op with 'cell_formats' redirects cleanly to batch_format_workbook
+        cf_res = await server.batch_write_ranges(
+            workbook_id=wb_id,
+            operations=[{"range": "Assumptions!B2", "cell_formats": [{"number_format": "$#,##0"}]}],
+        )
+        assert cf_res["status"] == "error"
+        assert "batch_format_workbook" in cf_res["error"]
+
+        # 3. Upgrade #2: save_workbook compile-time linter flags empty tab + unformatted numbers in 'General'
+        save_res = await server.save_workbook(wb_id, file_path=str(out_xlsx))
+        assert save_res["status"] == "success"
+        warns = save_res.get("sanity_warnings") or []
+        assert any("EmptyTab" in w and "empty" in w.lower() for w in warns)
+        assert any("General" in w for w in warns)
+
+        # After formatting and populating EmptyTab, sanity_warnings disappears completely (0 extra tokens when clean)
+        await server.batch_write_ranges(
+            workbook_id=wb_id,
+            operations=[{"sheet_name": "EmptyTab", "range": "A1", "value": "Populated"}],
+        )
+        await server.batch_format_workbook(
+            workbook_id=wb_id,
+            operations=[{
+                "sheet_name": "Assumptions",
+                "number_formats": {"B2:B3": "$#,##0", "B4:B5": "0.0%"},
+            }],
+        )
+        save_clean = await server.save_workbook(wb_id, file_path=str(out_xlsx))
+        assert save_clean["status"] == "success"
+        assert "sanity_warnings" not in save_clean
+    finally:
+        await server.close_workbook(wb_id)
+
+
+@pytest.mark.asyncio
+async def test_audit_workbook_formulas_detects_silent_wrong_month_r1c1_inconsistency(tmp_path, monkeypatch):
+    """ModeLoop audit test: catch a formula returning a valid number (0 Excel errors) that references the wrong month."""
+    monkeypatch.setenv("M365_MCP_LIVE_SYNC", "off")
+    wb = await server.create_workbook(title="Monthly P&L Audit", sheet_names=["Monthly P&L"])
+    wb_id = wb["workbook_id"]
+    out_xlsx = tmp_path / "Monthly_WrongMonth.xlsx"
+    try:
+        # 6 months (Jan..Jun in B..G) + Total column (H):
+        # Row 2: Revenue, Row 3: Gross Profit, Row 4: Gross Margin (=GP/Rev)
+        # Plant a SILENT wrong-month logic error in Apr (E4): =E3/D2 (divides Apr GP by Mar Revenue -> valid number, wrong logic!)
+        await server.batch_write_ranges(
+            workbook_id=wb_id,
+            operations=[{
+                "sheet_name": "Monthly P&L",
+                "range": "A1:H4",
+                "data": [
+                    ["Metric", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Total"],
+                    ["Revenue", 1000, 1100, 1200, 1500, 1400, 1600, "=SUM(B2:G2)"],
+                    ["Gross Profit", 400, 440, 480, 600, 560, 640, "=SUM(B3:G3)"],
+                    [
+                        "Gross Margin",
+                        "=B3/B2",
+                        "=C3/C2",
+                        "=D3/D2",
+                        "=E3/D2",  # <-- SILENT WRONG-MONTH BUG (0.50 instead of 0.40, zero Excel #ERR!)
+                        "=F3/F2",
+                        "=G3/G2",
+                        "=H3/H2",
+                    ],
+                ],
+            }],
+        )
+        await server.save_workbook(wb_id, file_path=str(out_xlsx))
+
+        # 1. Audit BEFORE fix: zero Excel errors, yet clean=False and E4 caught deterministically with exact expected_formula!
+        audit_before = await server.audit_workbook_formulas(workbook_id=wb_id)
+        assert audit_before["error_count"] == 0
+        assert audit_before["row_inconsistency_count"] == 1
+        assert audit_before["clean"] is False
+        inc = audit_before["row_inconsistencies"][0]
+        assert inc["sheet_name"] == "Monthly P&L"
+        assert inc["cell"] == "E4"
+        assert inc["col_header"] == "Apr"
+        assert inc["formula"] == "=E3/D2"
+        assert inc["expected_formula"] == "=E3/E2"
+        assert inc["r1c1_signature"] == "=R[-1]C/R[-2]C[-1]"
+        assert inc["dominant_r1c1_pattern"] == "=R[-1]C/R[-2]C"
+
+        # Independent ground-truth check (Apr GP 600 / Apr Rev 1500 = 0.40 vs buggy 600 / Mar Rev 1200 = 0.50)
+        expected_apr_margin = 600 / 1500
+        buggy_apr_margin = 600 / 1200
+        assert abs(expected_apr_margin - 0.40) < 1e-9
+        assert abs(buggy_apr_margin - 0.50) < 1e-9
+
+        # 2. Apply fix (=E3/E2) and re-audit -> 100% clean (and Total column H is NOT falsely flagged!)
+        await server.write_cell(wb_id, "Monthly P&L", "E4", inc["expected_formula"])
+        audit_after = await server.audit_workbook_formulas(workbook_id=wb_id)
+        assert audit_after["error_count"] == 0
+        assert audit_after["row_inconsistency_count"] == 0
+        assert audit_after["clean"] is True
+    finally:
+        await server.close_workbook(wb_id)
+
+
+@pytest.mark.asyncio
+async def test_project_dir_write_guard_and_audit_circular_npv_commutative_checks(tmp_path, monkeypatch):
+    """Verify MCP server blocks writes inside its own project folder and catches circular/1-arg NPV without commutative/Year-0 noise."""
+    monkeypatch.setenv("M365_MCP_LIVE_SYNC", "off")
+    project_root = Path(__file__).resolve().parent.parent
+
+    # 1. Excel save_workbook blocks both bare relative filename (when CWD is project root) and explicit project-dir paths
+    monkeypatch.chdir(project_root)
+    wb = await server.create_workbook(title="GuardTest", sheet_names=["Project Cash Flows", "Executive Summary"])
+    wb_id = wb["workbook_id"]
+    try:
+        res_rel = await server.save_workbook(wb_id, file_path="Accidental_In_Project.xlsx")
+        assert res_rel["status"] == "error"
+        assert res_rel["error_type"] == "PermissionError"
+        assert "project folder" in res_rel["error"].lower()
+        assert "desktop" in res_rel.get("hint", "").lower()
+        assert not (project_root / "Accidental_In_Project.xlsx").exists()
+
+        res_abs = await server.save_workbook(wb_id, file_path=str(project_root / "nested" / "Accidental.xlsx"))
+        assert res_abs["status"] == "error"
+        assert res_abs["error_type"] == "PermissionError"
+        assert not (project_root / "nested").exists()
+
+        # Word & PowerPoint also block writes into project root
+        doc = await server.create_document(title="GuardDoc")
+        doc_id = doc["document_id"]
+        try:
+            d_res = await server.save_document(doc_id, file_path="Accidental_Doc.docx")
+            assert d_res["status"] == "error"
+            assert d_res["error_type"] == "PermissionError"
+            assert not (project_root / "Accidental_Doc.docx").exists()
+        finally:
+            await server.close_document(doc_id)
+
+        prs = await server.create_presentation(title="GuardPPT")
+        prs_id = prs["presentation_id"]
+        p_res = await server.save_presentation(prs_id, file_path="Accidental_Deck.pptx")
+        assert p_res["status"] == "error"
+        assert p_res["error_type"] == "PermissionError"
+        assert not (project_root / "Accidental_Deck.pptx").exists()
+
+        # 2. Audit catches circular self-ref & 1-arg NPV in error_cells, ignores commutative '+' order & Year-0 zeros
+        await server.batch_write_ranges(
+            workbook_id=wb_id,
+            operations=[
+                {
+                    "sheet_name": "Project Cash Flows",
+                    "range": "A1:E4",
+                    "data": [
+                        ["Metric", 0, 1, 2, 3],
+                        ["UFCF", -25, 10, 12, 14],
+                        ["Cum. UFCF", "=B2", "=B3+C2", "=D2+C3", "=E2+D3"],  # commutative =B3+C2 vs =D2+C3 -> 0 R1C1 noise!
+                        ["Cum. PV", "=B2", "=B4+C2", "=D4+E2", "=E4+F2"],    # D4/E4 self-reference -> #CIRCULAR!
+                    ],
+                },
+                {
+                    "sheet_name": "Project Cash Flows",
+                    "range": "A5:E5",
+                    "data": [["Revenue", 0, 10, "=C5*1.1", "=D5*1.1"]],      # Year-0 literal 0 -> 0 suspicious_literals noise!
+                },
+                {
+                    "sheet_name": "Executive Summary",
+                    "range": "A1:B5",
+                    "data": [
+                        ["KPI", "Value"],
+                        ["PI", "=(NPV(B1)-25)/-25"],                         # 1-arg NPV() -> #SYNTAX!
+                        ["Spacer1", 1],
+                        ["Spacer2", 2],
+                        ["CrossSheetPI", "=(B2+'Project Cash Flows'!$B$5)/'Project Cash Flows'!$B$5"],  # cross-sheet $B$5 on B5 must NOT be circular!
+                    ],
+                },
+            ],
+        )
+
+        # Save to safe tmp_path -> succeeds and surfaces save-time sanity warnings for circular + 1-arg NPV
+        out_xlsx = tmp_path / "Safe_Model.xlsx"
+        saved = await server.save_workbook(wb_id, file_path=str(out_xlsx))
+        assert saved["status"] == "success"
+        joined_warns = " ".join(saved.get("sanity_warnings", []))
+        assert "circular" in joined_warns.lower()
+        assert "npv" in joined_warns.lower()
+
+        audit = await server.audit_workbook_formulas(workbook_id=wb_id)
+        assert audit["clean"] is False
+        err_codes = {(e["cell"], e["error"]) for e in audit.get("error_cells", [])}
+        assert ("D4", "#CIRCULAR!") in err_codes
+        assert ("E4", "#CIRCULAR!") in err_codes
+        assert ("B2", "#SYNTAX!") in err_codes
+        assert ("B5", "#CIRCULAR!") not in err_codes
+        # Commutative Cum. UFCF row 3 must NOT be flagged as an R1C1 inconsistency
+        inc_rows = {(i["sheet_name"], i["row_label"]) for i in audit.get("row_inconsistencies", [])}
+        assert ("Project Cash Flows", "Cum. UFCF") not in inc_rows
+        # Year-0 Revenue=0 must NOT be flagged as a suspicious literal
+        lit_cells = {(s["sheet_name"], s["cell"]) for s in audit.get("suspicious_literals", [])}
+        assert ("Project Cash Flows", "B5") not in lit_cells
+    finally:
+        await server.close_workbook(wb_id)
+
+
+@pytest.mark.asyncio
+async def test_default_output_dir_env_var_and_explicit_path_precedence(tmp_path, monkeypatch):
+    """Verify exact 4-tier path order: (1) Explicit user path > (2) Client/Bionic Project Folder > (3) M365_MCP_OUTPUT_DIR; (4) MCP project root ALWAYS blocked."""
+    from utils.validators import set_client_project_dir
+
+    monkeypatch.setenv("M365_MCP_LIVE_SYNC", "off")
+    project_root = Path(__file__).resolve().parent.parent
+    monkeypatch.chdir(project_root)
+    set_client_project_dir(None)
+
+    try:
+        # 1. When unset, check_office_status omits active_project_dir & default_output_dir
+        monkeypatch.delenv("M365_MCP_OUTPUT_DIR", raising=False)
+        monkeypatch.delenv("OFFICE365_MCP_OUTPUT_DIR", raising=False)
+        status_unset = await server.check_office_status()
+        assert "default_output_dir" not in status_unset["profile"]
+        assert "active_project_dir" not in status_unset["profile"]
+
+        # 2. Setting M365_MCP_OUTPUT_DIR or working_dir inside MCP project root is ignored/blocked
+        monkeypatch.setenv("M365_MCP_OUTPUT_DIR", str(project_root))
+        status_bad = await server.check_office_status(working_dir=str(project_root))
+        assert "default_output_dir" not in status_bad["profile"]
+        assert "active_project_dir" not in status_bad["profile"]
+
+        # 3. Priority #3 (M365_MCP_OUTPUT_DIR) resolves bare relative filenames when no Project Folder is set
+        env_fallback_dir = tmp_path / "GlobalEnvFallback"
+        bionic_proj_a = tmp_path / "BionicProjectA"
+        bionic_proj_b = tmp_path / "BionicProjectB"
+        user_explicit_dir = tmp_path / "UserExplicitFolder"
+        monkeypatch.setenv("M365_MCP_OUTPUT_DIR", str(env_fallback_dir))
+
+        status_env = await server.check_office_status()
+        assert status_env["profile"]["default_output_dir"] == str(env_fallback_dir.resolve())
+        assert "active_project_dir" not in status_env["profile"]
+
+        wb = await server.create_workbook(title="RelTest", sheet_names=["Sheet1"])
+        wb_id = wb["workbook_id"]
+        try:
+            await server.write_cell(wb_id, "Sheet1", "A1", 123)
+            saved_env = await server.save_workbook(wb_id, file_path="Env_Fallback.xlsx")
+            assert saved_env["status"] == "success"
+            assert Path(saved_env["file_path"]) == (env_fallback_dir / "Env_Fallback.xlsx").resolve()
+            assert (env_fallback_dir / "Env_Fallback.xlsx").exists()
+
+            # 4. Priority #2 (Bionic Project Folder via check_office_status(working_dir=...)) BEATS M365_MCP_OUTPUT_DIR!
+            status_proj_a = await server.check_office_status(working_dir=str(bionic_proj_a))
+            assert status_proj_a["profile"]["active_project_dir"] == str(bionic_proj_a.resolve())
+            saved_proj_a = await server.save_workbook(wb_id, file_path="CapEx_Stress.xlsx")
+            assert saved_proj_a["status"] == "success"
+            expected_a = (bionic_proj_a / "CapEx_Stress.xlsx").resolve()
+            assert Path(saved_proj_a["file_path"]) == expected_a
+            assert expected_a.exists()
+            assert not (env_fallback_dir / "CapEx_Stress.xlsx").exists()
+            assert not (project_root / "CapEx_Stress.xlsx").exists()
+
+            # Bare relative audit/open ALSO resolves from Priority #2 (Bionic Project Folder) first
+            audit_a = await server.audit_workbook_formulas(file_path="CapEx_Stress.xlsx")
+            assert audit_a["status"] == "success"
+            assert Path(audit_a["file_path"]) == expected_a
+
+            # Switching Bionic projects updates Priority #2 immediately
+            await server.check_office_status(working_dir=str(bionic_proj_b))
+            saved_proj_b = await server.save_workbook(wb_id, file_path="CapEx_Stress.xlsx")
+            assert Path(saved_proj_b["file_path"]) == (bionic_proj_b / "CapEx_Stress.xlsx").resolve()
+
+            # 5. Priority #1 (User explicit path) BEATS BOTH Bionic Project Folder AND M365_MCP_OUTPUT_DIR!
+            explicit_other = user_explicit_dir / "Other_Model.xlsx"
+            saved_other = await server.save_workbook(wb_id, file_path=str(explicit_other))
+            assert saved_other["status"] == "success"
+            assert Path(saved_other["file_path"]) == explicit_other.resolve()
+            assert explicit_other.exists()
+
+            # 6. Priority #4: Inside MCP project folder is ALWAYS blocked
+            blocked = await server.save_workbook(wb_id, file_path=str(project_root / "Sneaky.xlsx"))
+            assert blocked["status"] == "error"
+            assert blocked["error_type"] == "PermissionError"
+            assert not (project_root / "Sneaky.xlsx").exists()
+        finally:
+            await server.close_workbook(wb_id)
+    finally:
+        set_client_project_dir(None)
+
+
+@pytest.mark.asyncio
+async def test_launchservices_grant_access_strictly_scoped_to_project_dir_and_external_notice(tmp_path, monkeypatch):
+    """Verify LaunchServices auto-open is strictly scoped to Bionic's Project Folder ONLY, external files still prompt with 45s timeout + save notice, and timeouts emit HARD STOP."""
+    from integrations.applescript_bridge import AppleScriptBridge, AppleScriptTimeoutError
+    from utils.validators import set_client_project_dir
+
+    monkeypatch.setenv("M365_MCP_LIVE_SYNC", "off")
+    project_dir = tmp_path / "BionicProject"
+    external_dir = tmp_path / "ExternalFolder"
+    project_dir.mkdir()
+    external_dir.mkdir()
+    monkeypatch.setenv("M365_MCP_OUTPUT_DIR", str(external_dir))  # Even M365_MCP_OUTPUT_DIR must NOT waive Grant Access!
+    set_client_project_dir(project_dir)
+
+    try:
+        # 1. Save inside vs outside Project Folder -> grant_access_notice ONLY on external saves
+        wb = await server.create_workbook(title="ScopeTest", sheet_names=["Sheet1"])
+        wb_id = wb["workbook_id"]
+        in_proj_xlsx = project_dir / "Inside.xlsx"
+        ext_xlsx = external_dir / "Outside.xlsx"
+        try:
+            res_in = await server.save_workbook(wb_id, file_path=str(in_proj_xlsx))
+            assert res_in["status"] == "success"
+            assert "grant_access_notice" not in res_in
+
+            res_ext = await server.save_workbook(wb_id, file_path=str(ext_xlsx))
+            assert res_ext["status"] == "success"
+            assert "grant_access_notice" in res_ext
+            assert "outside" in res_ext["grant_access_notice"].lower()
+        finally:
+            await server.close_workbook(wb_id)
+
+        # 2. open_excel_file INSIDE Bionic Project Folder uses LaunchServices (waives Grant Access)
+        bridge = AppleScriptBridge()
+        ls_calls = []
+        as_timeouts = []
+        opened_in_excel = {"opened": False}
+
+        async def fake_ls(app_name, resolved, activate=False):
+            ls_calls.append((app_name, str(resolved), activate))
+            opened_in_excel["opened"] = True
+
+        async def fake_find(fp):
+            if opened_in_excel["opened"]:
+                return {"name": Path(fp).name, "active_sheet": "Sheet1", "saved": True}
+            return None
+
+        async def fake_exec(script, args=None, timeout=30.0):
+            as_timeouts.append(timeout)
+            if "name of active sheet of workbook" in script and "open workbook" not in script:
+                return "Sheet1"
+            return f"{Path(args[0]).name}\x1fSheet1"
+
+        monkeypatch.setattr(bridge, "_open_via_launchservices", fake_ls)
+        monkeypatch.setattr(bridge, "find_open_excel_workbook_by_path", fake_find)
+        monkeypatch.setattr(bridge, "execute_applescript", fake_exec)
+
+        res_open_in = await bridge.open_excel_file(str(in_proj_xlsx), read_only=False, activate=False)
+        assert res_open_in["method"] == "launchservices+applescript"
+        assert res_open_in["trusted_project_dir"] is True
+        assert len(ls_calls) == 1
+
+        # 3. Already-open recovery returns immediately without calling LaunchServices again
+        res_already = await bridge.open_excel_file(str(in_proj_xlsx), read_only=False, activate=False)
+        assert res_already["already_open"] is True
+        assert res_already["method"] == "already_open+applescript"
+        assert len(ls_calls) == 1
+
+        # 4. open_excel_file OUTSIDE Bionic Project Folder NEVER calls LaunchServices and uses 45s Grant Access timeout
+        opened_in_excel["opened"] = False
+        as_timeouts.clear()
+        res_open_ext = await bridge.open_excel_file(str(ext_xlsx), read_only=False, activate=False)
+        assert res_open_ext["method"] == "applescript"
+        assert len(ls_calls) == 1  # unchanged — LaunchServices was NOT called!
+        assert as_timeouts[-1] == 45.0
+
+        # 5. Timeout error payload signals awaiting_user_action=True and away-from-keyboard HARD STOP
+        err_payload = server._error_response("excel_live_open", AppleScriptTimeoutError("timed out"))
+        assert err_payload["awaiting_user_action"] is True
+        assert "hard stop" in err_payload["hint"].lower()
+        assert "continue" in err_payload["hint"].lower()
+    finally:
+        set_client_project_dir(None)
+
+
+@pytest.mark.asyncio
+async def test_afk_hardening_all_seven_guards(tmp_path, monkeypatch):
+    """Verify all 7 Away-From-Keyboard (AFK) hardening guards across PDF staging, live-sync reload timeout, unsaved edits, -1743, non-live timeouts, and formula guard."""
+    from integrations.applescript_bridge import AppleScriptTimeoutError
+    from utils.validators import set_client_project_dir
+
+    project_dir = tmp_path / "TrustedProject"
+    external_dir = tmp_path / "ExternalDir"
+    project_dir.mkdir()
+    external_dir.mkdir()
+    set_client_project_dir(project_dir)
+
+    try:
+        # Fix #1: Excel & Word PDF export inside trusted Project Folder stage inside save_path.parent (and auto-clean!)
+        wb = await server.create_workbook(title="PdfStageTest", sheet_names=["Sheet1"])
+        wb_id = wb["workbook_id"]
+        opened_excel_pdf_sources = []
+
+        async def fake_open_excel_pdf(fp, read_only=False, activate=False):
+            opened_excel_pdf_sources.append((fp, read_only))
+            return {"status": "success", "workbook_name": Path(fp).name, "active_sheet": "Sheet1"}
+
+        async def fake_save_excel_live(workbook_name=None, file_path=None, file_format="pdf"):
+            Path(file_path).write_bytes(b"%PDF-1.4 mock")
+            return {"status": "success", "workbook_name": workbook_name, "file_path": file_path, "format": file_format}
+
+        async def fake_close_excel_live(workbook_name=None, save_changes="no"):
+            return {"status": "success", "closed_workbook": workbook_name}
+
+        monkeypatch.setattr(server.excel.applescript, "open_excel_file", fake_open_excel_pdf)
+        monkeypatch.setattr(server.excel.applescript, "save_excel_workbook", fake_save_excel_live)
+        monkeypatch.setattr(server.excel.applescript, "close_excel_workbook", fake_close_excel_live)
+        try:
+            in_pdf = project_dir / "Brief.pdf"
+            res_pdf_in = await server.save_workbook(wb_id, file_path=str(in_pdf), format="pdf")
+            assert res_pdf_in["status"] == "success"
+            src_in, ro_in = opened_excel_pdf_sources[-1]
+            assert Path(src_in).parent == project_dir  # staged inside trusted project dir -> LaunchServices waives Grant Access!
+            assert ro_in is False
+            assert not Path(src_in).exists()  # hidden staging file cleaned up in finally
+
+            ext_pdf = external_dir / "External.pdf"
+            res_pdf_ext = await server.save_workbook(wb_id, file_path=str(ext_pdf), format="pdf")
+            assert res_pdf_ext["status"] == "success"
+            src_ext, ro_ext = opened_excel_pdf_sources[-1]
+            assert Path(src_ext).parent != project_dir
+            assert ro_ext is True  # external PDF keeps read_only/AppleScript so macOS still asks Grant Access
+        finally:
+            await server.close_workbook(wb_id)
+
+        # Word PDF export inside trusted Project Folder also stages inside save_path.parent and cleans up
+        doc = await server.create_document(title="WordPdfStage")
+        doc_id = doc["document_id"]
+        opened_word_pdf_sources = []
+
+        async def fake_open_word_pdf(fp, read_only=False, activate=False):
+            opened_word_pdf_sources.append((fp, read_only))
+            return {"status": "success", "document_name": Path(fp).name}
+
+        async def fake_save_word_live(document_name=None, file_path=None, file_format="pdf"):
+            Path(file_path).write_bytes(b"%PDF-1.4 word mock")
+            return {"status": "success", "document_name": document_name, "file_path": file_path, "format": file_format}
+
+        async def fake_close_word_live(document_name=None, save_changes="no"):
+            return {"status": "success", "closed_document": document_name}
+
+        monkeypatch.setattr(server.word.applescript, "open_word_file", fake_open_word_pdf)
+        monkeypatch.setattr(server.word.applescript, "save_word_document", fake_save_word_live)
+        monkeypatch.setattr(server.word.applescript, "close_word_document", fake_close_word_live)
+        try:
+            w_pdf = project_dir / "Memo.pdf"
+            res_w_pdf = await server.save_document(doc_id, file_path=str(w_pdf), format="pdf")
+            assert res_w_pdf["status"] == "success"
+            w_src, _ = opened_word_pdf_sources[-1]
+            assert Path(w_src).parent == project_dir
+            assert not Path(w_src).exists()
+        finally:
+            await server.close_document(doc_id)
+
+        # Fix #2: M365_MCP_LIVE_SYNC=AUTO reload timeout surfaces awaiting_user_action=True + HARD STOP
+        monkeypatch.setenv("M365_MCP_LIVE_SYNC", "auto")
+        wb2 = await server.create_workbook(title="ReloadTimeoutTest", sheet_names=["Sheet1"])
+        wb2_id = wb2["workbook_id"]
+
+        async def fake_find_saved(fp):
+            return {"name": Path(fp).name, "saved": True}
+
+        async def fake_capture_view(wb_name):
+            return {}
+
+        async def fake_open_timeout(fp, read_only=False, activate=False):
+            raise AppleScriptTimeoutError("Excel Grant Access timed out")
+
+        monkeypatch.setattr(server.excel.applescript, "find_open_excel_workbook_by_path", fake_find_saved)
+        monkeypatch.setattr(server.excel.applescript, "capture_excel_workbook_view_state", fake_capture_view)
+        monkeypatch.setattr(server.excel.applescript, "open_excel_file", fake_open_timeout)
+        try:
+            res_reload_to = await server.save_workbook(wb2_id, file_path=str(external_dir / "Reloaded.xlsx"))
+            assert res_reload_to["status"] == "success"
+            assert res_reload_to["awaiting_user_action"] is True
+            assert "hard stop" in res_reload_to["hint"].lower()
+            assert "grant_access_notice" in res_reload_to
+        finally:
+            await server.close_workbook(wb2_id)
+
+        # Fix #3: Unsaved manual changes collision emits awaiting_user_action=True + HARD STOP
+        err_unsaved = server._error_response(
+            "save_workbook",
+            RuntimeError("File 'Model.xlsx' is currently open in Microsoft Excel with unsaved manual changes."),
+        )
+        assert err_unsaved["awaiting_user_action"] is True
+        assert "hard stop" in err_unsaved["hint"].lower()
+        assert "excel_live_close" in err_unsaved["hint"].lower()
+
+        # Fix #4: Automation -1743 PermissionError emits awaiting_user_action=True + HARD STOP (no file-level fallback)
+        err_1743 = server._error_response("excel_live_open", RuntimeError("Not authorized to send Apple events (-1743)"))
+        assert err_1743["awaiting_user_action"] is True
+        assert "hard stop" in err_1743["hint"].lower()
+        assert "instead of *_live_*" not in err_1743["hint"].lower()
+
+        # Fix #5: Non-live TimeoutError (e.g. save_workbook/save_document/open_presentation) ALSO emits awaiting_user_action=True + HARD STOP
+        err_nonlive_to = server._error_response("save_document", AppleScriptTimeoutError("timed out"))
+        assert err_nonlive_to["awaiting_user_action"] is True
+        assert "hard stop" in err_nonlive_to["hint"].lower()
+        assert "then retry" not in err_nonlive_to["hint"].lower()
+
+        # Fix #7: Formula Guard response also carries unified awaiting_user_action=True
+        fg = server.excel._formula_guard_response("literals_only", [{"sheet_name": "S", "cell": "B2"}])
+        assert fg["status"] == "confirmation_required"
+        assert fg["awaiting_user_action"] is True
+    finally:
+        set_client_project_dir(None)

@@ -19,10 +19,10 @@ This guide provides realistic, benchmark-grounded recommendations for pairing **
 | **Recommended MCP Profile** | **`EXCEL,COMPACT`** *(mandatory, 25 tools)* | **`EXCEL,COMPACT`** *(daily)* or `EXCEL` / `EXCEL,WORD` | **`EXCEL,COMPACT`** *(fastest)* or `FULL` *(all 82 tools)* |
 | **Safe Context Length** | `16,384` *(9B)* / `12,288` *(14B)* | `32,768` | `65,536` – `131,072` |
 | **KV Cache Quantization** | **Required:** `K=Q8_0, V=Q8_0` | **Recommended:** `K=Q8_0, V=Q8_0` | Optional (`FP16` or `Q8_0`) |
-| **Reasoning Budget** | `1024` (`Preserve Thinking = ON`) | `1536–2048` (`Preserve Thinking = ON`) | `2048` (`Preserve Thinking = ON`, `Presence Penalty = 0.2`) |
+| **Reasoning Budget** | `1024` (`Preserve Thinking = OFF`) | `1536–2048` (`Preserve Thinking = OFF`) | `2048` (`Preserve Thinking = OFF`, `Presence Penalty = 0.2`) |
 | **System Prompt** | **V3.4 + 2-Phase Chunking** | **V3.4 Full** ([`SYSTEM_PROMPT.md`](../Sample%20Model%20Config/SYSTEM_PROMPT.md)) | **V3.4 Full** ([`SYSTEM_PROMPT.md`](../Sample%20Model%20Config/SYSTEM_PROMPT.md)) |
 | **Expected Decode Speed** | **~20–32 tok/s** *(9B)* / ~12–16 *(14B)* | **~20–30 tok/s** *(35B MoE)* / **35–50** *(gpt-oss-20b)* | **~22–32 tok/s** *(`Q6_K`)* / **~18–26** *(`Q8_0`)* |
-| **Hallucination / Loop Risk** | **Moderate** *(mitigated by chunking + Formula Guard)* | **Low–Moderate** | **Very Low** *(`Q6_K`/`Q8_0` + `Preserve Thinking = ON`)* |
+| **Hallucination / Loop Risk** | **Moderate** *(mitigated by chunking + Formula Guard)* | **Low–Moderate** | **Very Low** *(`Q6_K`/`Q8_0` + MCP `cell_map` & live skill loader)* |
 
 ---
 
@@ -45,7 +45,7 @@ This guide provides realistic, benchmark-grounded recommendations for pairing **
 
 ### Tier 3 — 64 GB Unified Memory (M4 Pro / M4 Max or Better) — *Verified Reference*
 - **Memory Reality:** **~54–56 GB** available; zero swap pressure even with Excel, Word, PowerPoint, Bionic, and 65K–128K context open together.
-- **Best Setup (Verified on Mac mini M4 Pro 64 GB):** **`Qwen3.6 35B A3B — GGUF Q6_K` (~29 GB, fastest) or `Q8_0` (~38 GB, lossless)** + `M365_MCP_PROFILE=EXCEL,COMPACT` (or `FULL`) + `Context = 65536` + `Flash Attention = ON` + `Unified + GPU KV Cache = ON` + `Reasoning Budget = 2048` + `Preserve Thinking = ON` + `Repeat Penalty = Off` + `Presence Penalty = 0.2` + **V3.4 Full** (see [`Sample Model Config/`](../Sample%20Model%20Config/)).
+- **Best Setup (Verified on Mac mini M4 Pro 64 GB):** **`Qwen3.6 35B A3B — GGUF Q6_K` (~29 GB, fastest) or `Q8_0` (~38 GB, lossless)** + `M365_MCP_PROFILE=EXCEL,COMPACT` (or `FULL`) + `Context = 65536` + `Flash Attention = ON` + `Unified + GPU KV Cache = ON` + `Reasoning Budget = 2048` + `Preserve Thinking = OFF` + `Repeat Penalty = Off` + `Presence Penalty = 0.2` + **V3.4 Full** (see [`Sample Model Config/`](../Sample%20Model%20Config/)).
 - **Hallucination / Loop Profile (Very Low):** `Q6_K`/`Q8_0` MoE eliminates 4-bit drift on nested JSON (`batch_format_workbook`, `batch_write_ranges`) and multi-sheet formulas while keeping interactive MoE speed.
 
 > **GGUF (`llama.cpp`) vs. MLX (`oMLX`) Tip:** For **multi-turn MCP tool-calling in Bionic / LM Studio**, prefer **GGUF (`llama.cpp`)** — it delivers more reliable tool-call parsing, faster multi-turn prompt-cache prefill, and unlocks **`Reasoning Budget`** caps (`1024–2048`) so models stay concise and responsive.
@@ -86,6 +86,7 @@ Every `M365_MCP_PROFILE` value is **case-insensitive** and composable (comma-sep
 1. **Best Setup for Almost Everyone (16 GB, 32 GB, and 64 GB) — Dual-Server Bionic Pattern:**
    - **Primary MCP Server (Always ON):** `M365_MCP_PROFILE=EXCEL,COMPACT` (**25 tools, ~2.4K tokens**). Covers 100% of Excel modeling, Wall Street formatting, charts, tables, data validation, auditing, live recalculation, and open-workbook discovery (`excel_live_list_workbooks`).
    - **Secondary MCP Server (Set to *Hide from agent unless mentioned*):** `M365_MCP_PROFILE=WORD,POWERPOINT` (**33 tools, ~2.7K tokens** — **0 tokens** until you `@`-mention it for `boardroom-brief-generator`!).
+   - **Disable Shell Commands in Bionic:** Set **Command approvals → `Off` (*Don't allow shell commands*)** in the Bionic chat bar so local models cannot bypass `m365-mac-mcp` with ad-hoc Python/bash scripts.
 2. **When to Use `M365_MCP_PROFILE=EXCEL` (50 tools, ~4.8K tokens):**
    - Only if you specifically need Excel custom views (`excel_live_custom_views`), named style inspection (`list_cell_styles`), or prefer single-cell/single-range tools alongside batch tools on a **32 GB / 64 GB** Mac.
 3. **When to Use `M365_MCP_PROFILE=FULL` (82 tools, ~7.4K tokens):**

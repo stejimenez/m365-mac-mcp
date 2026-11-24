@@ -12,6 +12,7 @@ import functools
 import inspect
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -35,7 +36,12 @@ from controllers.word_controller import WordController
 from integrations.applescript_bridge import AppleScriptBridge
 from utils.config import Config
 from utils.logger import setup_logger
-from utils.validators import sanitize_for_json
+from utils.validators import (
+    get_client_project_dir,
+    get_default_output_dir,
+    sanitize_for_json,
+    set_client_project_dir,
+)
 
 logger = setup_logger(__name__)
 config = Config()
@@ -259,18 +265,37 @@ def _error_response(action: str, exc: Exception) -> Dict[str, Any]:
     msg = str(exc)
     hint: Optional[str] = None
 
-    if isinstance(exc, PermissionError) or "-1743" in msg:
-        hint = "Grant Automation permission in System Settings > Privacy & Security > Automation, or use file-level tools instead of *_live_*."
+    awaiting_user_action = False
+    if isinstance(exc, PermissionError) and "mcp server project folder" in msg.lower():
+        hint = "Provide an explicit user output path outside the MCP server project folder (e.g., '~/Desktop/Model.xlsx' or '~/Documents/Report.docx')."
+    elif isinstance(exc, PermissionError) or "-1743" in msg:
+        awaiting_user_action = True
+        hint = (
+            "HARD STOP IMMEDIATELY: macOS denied Automation permission (-1743). "
+            "Do NOT fall back to uncached file-level reads for formulas or run downstream steps. "
+            "Ask the user to enable permission in System Settings > Privacy & Security > Automation for Microsoft Office and reply 'continue'."
+        )
     elif isinstance(exc, TimeoutError):
-        if action.startswith("excel_live_"):
-            hint = (
-                "Microsoft Excel is likely showing a modal or 'Grant Access' dialog. "
-                "STOP and ask the user to dismiss/approve the Excel dialog before retrying live; "
-                "do NOT fall back to file-level read_range to evaluate newly written formulas "
-                "(file-level reads return null for uncached formulas) and do NOT calculate formulas mentally."
-            )
-        else:
-            hint = "Check Microsoft Word/Excel for an open modal or 'Grant Access' dialog, then retry."
+        awaiting_user_action = True
+        hint = (
+            "Microsoft Office is likely waiting on a macOS 'Grant Access', Password, Enable Macros, or Repair modal dialog. "
+            "HARD STOP IMMEDIATELY: do NOT assume the operation succeeded, do NOT retry, do NOT save alternate copies, "
+            "do NOT fall back to file-level read_range for uncached formulas, do NOT calculate mentally, and do NOT run downstream steps. "
+            "Tell the user which file/action is waiting on Office and ask them to approve/dismiss the dialog and reply 'continue' when back."
+        )
+    elif "unsaved manual changes" in msg.lower():
+        awaiting_user_action = True
+        hint = (
+            "HARD STOP IMMEDIATELY: the user has unsaved manual edits open in Microsoft Excel. "
+            "Do NOT call excel_live_save, do NOT call excel_live_close(save_changes='no'), and do NOT save alternate copies elsewhere. "
+            "Ask the user to save (Cmd+S) or discard their changes in Excel and reply 'continue'."
+        )
+    elif action == "excel_live_open" and ("-50" in msg or "parameter error" in msg.lower()):
+        hint = (
+            "Microsoft Excel rejected the saved .xlsx file (Parameter error -50), typically due to invalid formula syntax "
+            "(e.g., 1-argument NPV()), a circular self-reference, or malformed OOXML. Call audit_workbook_formulas(workbook_id=...), "
+            "fix any flagged formulas/inconsistencies, call save_workbook, then retry excel_live_open."
+        )
     elif isinstance(exc, FileNotFoundError):
         hint = "Verify the file path exists (supports ~ expansion and spaces) before retrying."
     elif isinstance(exc, ValueError):
@@ -292,6 +317,8 @@ def _error_response(action: str, exc: Exception) -> Dict[str, Any]:
         "error_type": type(exc).__name__,
         "error": msg,
     }
+    if awaiting_user_action:
+        payload["awaiting_user_action"] = True
     if hint:
         payload["hint"] = hint
     return sanitize_for_json(payload)
@@ -1164,13 +1191,15 @@ async def batch_write_ranges(
     workbook_id: Optional[str] = None,
     operations: Optional[List[Dict[str, Any]]] = None,
     allow_formula_overwrite: bool = False,
+    sheet_name: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Write multiple 2D ranges or drag-fill formulas across sheets in one call. workbook_id auto-resolves if 1 workbook is active; data is row-major 2D [[r1c1,r1c2],[r2c1,r2c2]]. Supports Excel-style drag/fill via {'sheet_name':'...','range':'C4:H4','fill_formula':'=C2*C3'} (auto-translates relative refs across 1D/2D ranges)."""
+    """Write multiple 2D ranges or drag-fill formulas across sheets in one call. workbook_id auto-resolves if 1 workbook is active; optional top-level sheet_name sets the default sheet for ops omitting sheet_name (and 'Sheet!A1:C3' prefixes in range are also parsed). Supports 2D data [[r1c1,r1c2]] or drag/fill via {'sheet_name':'...','range':'C4:H4','fill_formula':'=C2*C3'}."""
     try:
         return await excel.batch_write_ranges(
             workbook_id=workbook_id,
             operations=operations,
             allow_formula_overwrite=allow_formula_overwrite,
+            sheet_name=sheet_name,
         )
     except Exception as exc:
         return _error_response("batch_write_ranges", exc)
@@ -1652,6 +1681,36 @@ async def excel_live_batch_read_ranges(
         return _error_response("excel_live_batch_read_ranges", exc)
 
 
+def _find_dirty_in_memory_workbook(
+    workbook_name: Optional[str] = None,
+    file_path: Optional[str] = None,
+) -> Optional[str]:
+    """Return the workbook_id of a matching active in-memory workbook with unsaved file-level edits."""
+    targets: set[str] = set()
+    if workbook_name and str(workbook_name).strip():
+        targets.add(Path(str(workbook_name).strip()).name.lower())
+    if file_path and str(file_path).strip():
+        targets.add(Path(str(file_path).strip()).expanduser().name.lower())
+
+    dirty_ids: List[str] = []
+    for wb_id, entry in excel.active_workbooks.items():
+        if not entry.get("dirty"):
+            continue
+        dirty_ids.append(wb_id)
+        if targets:
+            meta = entry.get("metadata") or {}
+            candidates = {
+                Path(str(entry.get("working_path") or "")).name.lower(),
+                Path(str(meta.get("file_path") or "")).name.lower(),
+                Path(str(meta.get("original_path") or "")).name.lower(),
+            }
+            if targets & candidates:
+                return wb_id
+    if not targets and len(dirty_ids) == 1:
+        return dirty_ids[0]
+    return None
+
+
 @_tool(app="excel")
 async def excel_live_save(
     workbook_name: Optional[str] = None,
@@ -1660,6 +1719,22 @@ async def excel_live_save(
 ) -> Dict[str, Any]:
     """Save a live Excel workbook in-place or Save As (.xlsx, .xlsm, .csv, .pdf)."""
     try:
+        dirty_wb_id = _find_dirty_in_memory_workbook(workbook_name=workbook_name, file_path=file_path)
+        if dirty_wb_id:
+            return {
+                "status": "error",
+                "action": "excel_live_save",
+                "error_type": "UnsavedInMemoryEditsError",
+                "error": (
+                    f"In-memory workbook '{dirty_wb_id}' has unsaved file-level edits "
+                    "(from batch_write_ranges/write_cell/batch_format_workbook). "
+                    "Calling excel_live_save would save Excel's stale copy over disk and lose those edits."
+                ),
+                "hint": (
+                    f"Call save_workbook(workbook_id='{dirty_wb_id}', file_path=...) instead — "
+                    "M365_MCP_LIVE_SYNC=auto will write your edits and automatically reload Excel."
+                ),
+            }
         return await applescript.save_excel_workbook(
             workbook_name=workbook_name,
             file_path=file_path,
@@ -1877,33 +1952,136 @@ async def list_active_presentations() -> List[Dict[str, Any]]:
     return sanitize_for_json(await powerpoint.list_presentations())
 
 
-@_tool(app="core")
-async def check_office_status() -> Dict[str, Any]:
-    """Check installed versions, running status, and active M365_MCP_PROFILE configuration."""
+_SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
+
+
+def _discover_finance_skills() -> List[Dict[str, str]]:
+    """Scan skills/*/SKILL.md live from disk so models always see current versions and slugs."""
+    skills: List[Dict[str, str]] = []
+    if not _SKILLS_DIR.is_dir():
+        return skills
+    for skill_md in sorted(_SKILLS_DIR.glob("*/SKILL.md")):
+        try:
+            txt = skill_md.read_text(encoding="utf-8")
+            fm = txt.split("---", 2)[1] if txt.startswith("---") and txt.count("---") >= 2 else ""
+            name_m = re.search(r"^name:\s*(.+?)\s*$", fm, re.MULTILINE)
+            ver_m = re.search(r"^version:\s*(.+?)\s*$", fm, re.MULTILINE)
+            desc_m = re.search(r"^description:\s*(.+?)\s*$", fm, re.MULTILINE)
+            slug = (name_m.group(1).strip().strip('"').strip("'") if name_m else skill_md.parent.name)
+            ver = (ver_m.group(1).strip().strip('"').strip("'") if ver_m else "")
+            desc = (desc_m.group(1).strip().strip('"').strip("'") if desc_m else "")
+            desc = re.sub(r"^\[v[^\]]+\]\s*", "", desc)
+            skills.append({"name": slug, "version": ver, "summary": desc[:110], "_path": str(skill_md)})
+        except Exception:
+            continue
+    return skills
+
+
+async def _sync_client_roots_from_context(ctx: Any) -> None:
+    """Best-effort sync of MCP client workspace root (e.g. Bionic/VS Code/Cline Project Folder) via roots/list."""
     try:
+        session = getattr(ctx, "session", None)
+        if session is None:
+            return
+        caps = getattr(session, "client_capabilities", None)
+        if caps is None or getattr(caps, "roots", None) is None:
+            return
+        import asyncio
+        roots_result = await asyncio.wait_for(session.list_roots(), timeout=1.5)
+        roots = getattr(roots_result, "roots", None) or []
+        for root in roots:
+            uri = str(getattr(root, "uri", "") or "")
+            if uri.startswith("file://"):
+                if set_client_project_dir(uri) is not None:
+                    return
+    except Exception:
+        pass
+
+
+if hasattr(mcp, "_handle_call_tool"):
+    _orig_handle_call_tool = mcp._handle_call_tool
+
+    async def _wrapped_handle_call_tool(ctx: Any, params: Any) -> Any:
+        # Sync client MCP roots on check_office_status (refreshes across project switches) or when unset
+        tool_name = getattr(params, "name", "")
+        tool_args = getattr(params, "arguments", None) or {}
+        if (tool_name == "check_office_status" and not tool_args.get("working_dir")) or get_client_project_dir() is None:
+            await _sync_client_roots_from_context(ctx)
+        return await _orig_handle_call_tool(ctx, params)
+
+    mcp._handle_call_tool = _wrapped_handle_call_tool  # type: ignore[method-assign]
+
+
+@_tool(app="core")
+async def check_office_status(
+    skill_name: Optional[str] = None,
+    working_dir: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Check installed Office versions, active profile/tools, and live Finance skills. Pass skill_name (e.g. 'capex-project-analyzer') to load the full live SKILL.md playbook, and optional working_dir to register your Project Working Folder for bare relative paths."""
+    try:
+        if working_dir and str(working_dir).strip():
+            set_client_project_dir(str(working_dir).strip())
         versions = await applescript.get_office_version_info()
-        return sanitize_for_json({
+        discovered = _discover_finance_skills()
+        active_proj_dir = get_client_project_dir()
+        default_out = get_default_output_dir()
+        profile_info: Dict[str, Any] = {
+            "active_profile": _ACTIVE_PROFILE_LABEL,
+            "registered_tool_count": len(_REGISTERED_TOOL_NAMES),
+            "registered_tools": list(_REGISTERED_TOOL_NAMES),
+            "available_profiles": list(_AVAILABLE_PROFILES),
+            "live_sync_mode": excel.get_live_sync_mode(),
+            "available_live_sync_modes": ["auto", "off"],
+            "formula_guard_mode": excel.get_formula_guard_mode(),
+            "available_formula_guard_modes": ["literals_only", "strict", "off"],
+        }
+        if active_proj_dir is not None:
+            profile_info["active_project_dir"] = str(active_proj_dir)
+        if default_out is not None:
+            profile_info["default_output_dir"] = str(default_out)
+        payload: Dict[str, Any] = {
             "status": "running",
             "server_version": "2.3.1",
             "word_available": versions["word"]["installed"],
             "excel_available": versions["excel"]["installed"],
             "powerpoint_available": versions["powerpoint"]["installed"],
-            "profile": {
-                "active_profile": _ACTIVE_PROFILE_LABEL,
-                "registered_tool_count": len(_REGISTERED_TOOL_NAMES),
-                "available_profiles": list(_AVAILABLE_PROFILES),
-                "live_sync_mode": excel.get_live_sync_mode(),
-                "available_live_sync_modes": ["auto", "off"],
-                "formula_guard_mode": excel.get_formula_guard_mode(),
-                "available_formula_guard_modes": ["literals_only", "strict", "off"],
-            },
+            "profile": profile_info,
             "applications": versions,
             "active_in_memory": {
                 "documents": len(word.active_documents),
                 "workbooks": len(excel.active_workbooks),
                 "presentations": len(powerpoint.active_presentations),
             },
-        })
+        }
+        if skill_name and str(skill_name).strip():
+            query = str(skill_name).strip().lower()
+            matched = next((s for s in discovered if s["name"].lower() == query), None)
+            if matched is None:
+                matched = next((s for s in discovered if query in s["name"].lower()), None)
+            if matched is not None:
+                payload["loaded_skill"] = {
+                    "name": matched["name"],
+                    "version": matched["version"],
+                    "content": Path(matched["_path"]).read_text(encoding="utf-8"),
+                }
+            else:
+                payload["skill_error"] = f"Skill '{skill_name}' not found."
+                payload["finance_skills"] = [
+                    {"name": s["name"], "version": s["version"], "summary": s["summary"]}
+                    for s in discovered
+                ]
+        elif discovered:
+            payload["finance_skills"] = {
+                "instruction": (
+                    "For finance builds, audits, formatting, what-if, or boardroom briefs, "
+                    "call check_office_status(skill_name='<name>') to load the exact live playbook before editing."
+                ),
+                "available": [
+                    {"name": s["name"], "version": s["version"], "summary": s["summary"]}
+                    for s in discovered
+                ],
+            }
+        return sanitize_for_json(payload)
     except Exception as exc:
         return _error_response("check_office_status", exc)
 

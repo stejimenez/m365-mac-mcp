@@ -97,7 +97,7 @@ This server was developed, benchmarked, and end-to-end verified on the following
 | **Operating System** | **macOS 27.2.1** (Build `26B131`, Apple Silicon) |
 | **Microsoft 365 for Mac** | Excel `16.115`, Word `16.115.1`, PowerPoint `16.115.1` |
 | **MCP Client & Runtime** | **Bionic `1.2.2+3`** + **LM Studio** (`Metal llama.cpp 2.80.1` for GGUF) |
-| **Local Inference Model** | **`Qwen3.6 35B A3B — GGUF Q6_K` / `Q8_0`** (Context `65536`, GPU Offload `40`, CPU Threads `6`, Eval Batch `2048`, Phys Batch `512`, Flash Attention `ON`, Temp `0.3`, Reasoning Budget `2048`, Preserve Thinking `ON`, Unified + GPU KV Cache `ON`, Top-K `20`, Top-P `0.95`, Min-P `0.05`, Repeat Penalty `1.0` (`Off`), Presence Penalty `0.2`, Experts `8`) — see [`Sample Model Config/`](Sample%20Model%20Config/) |
+| **Local Inference Model** | **`Qwen3.6 35B A3B — GGUF Q6_K` / `Q8_0`** (Context `65536`, GPU Offload `40`, CPU Threads `6`, Eval Batch `2048`, Phys Batch `512`, Flash Attention `ON`, Temp `0.3`, Reasoning Budget `2048`, Preserve Thinking `OFF`, Unified + GPU KV Cache `ON`, Top-K `20`, Top-P `0.95`, Min-P `0.05`, Repeat Penalty `1.0` (`Off`), Presence Penalty `0.2`, Experts `8`) — see [`Sample Model Config/`](Sample%20Model%20Config/) |
 | **Python Environment** | Python `3.12.16` (`.venv`), `mcp` `2.3.0`, `openpyxl` `3.1.5`, `python-docx` `1.2.0` |
 | **Recommended MCP Env** | `M365_MCP_PROFILE=EXCEL,COMPACT` (or `EXCEL`), `M365_MCP_LIVE_SYNC=AUTO`, `M365_MCP_FORMULA_GUARD=LITERALS_ONLY`, `M365_MCP_APPLESCRIPT_TIMEOUT=30` |
 
@@ -169,6 +169,11 @@ This server was developed, benchmarked, and end-to-end verified on the following
 | `M365_MCP_APPLESCRIPT_TIMEOUT` | `30.0` | Timeout in seconds for each `osascript` call. *(Legacy `OFFICE365_MCP_APPLESCRIPT_TIMEOUT` also accepted.)* |
 | `M365_MCP_ENABLE_APPLESCRIPT` | `true` | Enable or disable AppleScript bridge (`true`/`false`). *(Legacy `OFFICE365_MCP_ENABLE_APPLESCRIPT` also accepted.)* |
 | `M365_MCP_TEMP_DIR` | `/tmp/m365-mac-mcp` | Temporary directory for intermediate/unnamed files. *(Legacy `OFFICE365_MCP_TEMP_DIR` also accepted.)* |
+| `M365_MCP_TEMPLATES_DIR` | *(unset / none)* | Optional default folder containing corporate Word/PowerPoint templates (`.pptx`, `.potx`, `.docx`, `.dotx`). |
+| `M365_MCP_PPT_TEMPLATE` | *(unset / blank 16:9)* | Optional default PowerPoint template filename (inside `M365_MCP_TEMPLATES_DIR`) or full path. |
+| `M365_MCP_WORD_TEMPLATE` | *(unset / blank)* | Optional default Word template filename (inside `M365_MCP_TEMPLATES_DIR`) or full path. |
+| `M365_MCP_OUTPUT_DIR` | *(unset / none)* | Optional Priority #3 fallback folder for bare relative filenames when no explicit path (#1) and no active Project Working Folder (#2) is configured. Writes inside the MCP server's own project folder are always blocked. |
+| `M365_MCP_GRANT_ACCESS_TIMEOUT` | `45.0` | Extended AppleScript timeout (clamped `15–55s`, safely under MCP client caps) when opening files *outside* the active Project Working Folder so macOS `Grant Access` prompts have room without hanging unattended runs. |
 | `M365_MCP_DEBUG_LOG` | *(unset / off)* | Optional local JSONL file path to log every MCP tool call, arguments, latency (ms), warnings, and errors for debugging. |
 
 ### Tool Profiles (`M365_MCP_PROFILE`)
@@ -224,9 +229,10 @@ Register two entries pointing to the same server `.venv`:
 
 **Recommended LM Studio / Bionic settings for `Qwen3.6 35B A3B — GGUF Q6_K` (fastest daily driver, ~29 GB) or `Q8_0` (~38 GB) (full screenshots & system prompt in [`Sample Model Config/`](Sample%20Model%20Config/)):**
 - **Context & Performance:** `Context Length = 65536`, `GPU Offload = 40`, `CPU Thread Pool Size = 6`, `Evaluation Batch Size = 2048`, `Physical Batch Size = 512`, `Max Concurrent Predictions = 1`, `Flash Attention = ON`
-- **Generation & Reasoning:** `Temperature = 0.3`, `Context Overflow = Stop at Limit`, `Reasoning Budget = 2048` (`"I have to answer now."`), `Preserve Thinking = ON` *(retains multi-turn reasoning so the agent never repeats tool loops)*
+- **Generation & Reasoning:** `Temperature = 0.3`, `Context Overflow = Stop at Limit`, `Reasoning Budget = 2048` (`"I have to answer now."`), `Preserve Thinking = OFF` *(keeps context lean & 2–3× faster; MCP `cell_map`, live `check_office_status(skill_name=..., working_dir=...)`, and save linter carry ground-truth state across turns)*
 - **Memory:** `Offload KV Cache to GPU = ON`, `Unified KV Cache = ON`, `Context Checkpoints = 32`, `Keep Model in Memory = ON`, `Try mmap() = ON`, `Speculative Decoding = Off` *(after editing Model Defaults, eject & reload the model or restart Bionic to flush cached KV checkpoints)*
 - **Sampling:** `Top K = 20`, `Top P = 0.95`, `Min P = 0.05`, `Repeat Penalty = 1.0` (`Off` — prevents JSON quote corruption on large 2D arrays), `Presence Penalty = 0.2` (`On` — gently prevents repetitive tool loops without corrupting JSON), `Number of Experts = 8`
+- **Shell Commands (Strongly Recommended in Bionic):** Click the command-approval icon next to `+` in the Bionic chat composer and set **Command approvals → `Off` (*Don't allow shell commands*)**. This enforces zero Python/bash bypasses at the client level, protects your Office files, and keeps local models routed 100% through `m365-mac-mcp`.
 - **System Prompt:** Copy [`Sample Model Config/SYSTEM_PROMPT.md`](Sample%20Model%20Config/SYSTEM_PROMPT.md) (`UNIVERSAL STERLING ENGINE V3.4 — FINANCE & M365 SPECIALIST`) into your client's System Prompt so the agent stays concise, anchors MCP routing (`check_office_status`) cleanly across both wrapper clients (Bionic) and native MCP CLIs, avoids built-in folder/shell bypasses, respects `M365_MCP_FORMULA_GUARD`, and uses your custom Finance `skills/` cleanly.
   > **Disclosure:** Applying `Sample Model Config/SYSTEM_PROMPT.md` **highly customizes the model for financial modeling, corporate valuation, Excel/VBA, and Microsoft 365 work only**. If you also use Bionic / LM Studio for general chat or non-finance coding, apply this prompt inside a dedicated Finance Project rather than as your global default.
 

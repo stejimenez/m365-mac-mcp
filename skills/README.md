@@ -3,7 +3,8 @@
 > **Status: Work in Progress (Active Development)**  
 > These Finance Skills are actively evolving as we test new workflows on local Apple Silicon models and refine accounting/modeling edge cases. Feedback, real-world test cases, and suggestions are welcome (`stejimenez@gmail.com`).
 
-**Author:** Sterling Jimenez, Ph.D. (stejimenez@gmail.com)
+**Author:** Sterling Jimenez, Ph.D. (stejimenez@gmail.com)  
+**Finance Skills Suite Version:** `v2.3.1` *(each skill carries an independent project-anchored version `<ProjectVer><Letter>`, e.g., `2.3.1A` → `2.3.1B`, visible in Bionic's Skills UI via `[v2.3.1A]` in `description:`)*
 
 This folder contains **9 ready-to-use**, pure-Markdown (**2.5–4.0 KB** each) **Finance Skills (`SKILL.md`)** supporting **natural-language prompts in English, French, and Spanish (EN / FR / ES)** so **non-technical finance professionals** can run institutional Excel, Word, and PowerPoint workflows—powered by **`m365-mac-mcp`**.
 
@@ -32,7 +33,8 @@ Recommended MCP environment variables *(all optional — if omitted or left blan
 3. **Recommended Finance System Prompt (`V3.4`):**  
    Copy [`Sample Model Config/SYSTEM_PROMPT.md`](../Sample%20Model%20Config/SYSTEM_PROMPT.md) (`UNIVERSAL STERLING ENGINE V3.4 — FINANCE & M365 SPECIALIST`) into your **Finance Project** System Prompt (works across both wrapper clients like Bionic and native MCP clients/CLIs). It anchors MCP routing (`check_office_status`), blocks built-in Office viewers, folder/shell/Python bypasses, and non-MCP document/canvas skills while letting your custom Finance skills load cleanly, enforces `M365_MCP_FORMULA_GUARD`, and prevents mental calculation of uncached `openpyxl` formulas.
    > **Disclosure:** Applying `Sample Model Config/SYSTEM_PROMPT.md` **highly customizes the model for financial modeling, corporate valuation, Excel/VBA, and Microsoft 365 work only**. If you also use Bionic / LM Studio for general-purpose chat or non-finance software development, apply it to a dedicated Finance Project instead of your global default prompt.
-4. Toggle your `m365-mac-mcp` MCP connection **OFF → ON** if you changed any environment variables.
+4. **Disable Shell Commands in Bionic (Strongly Recommended):** In the Bionic chat composer (next to `+`), set **Command approvals → `Off` (*Don't allow shell commands*)** so the agent cannot fall back to ad-hoc Python/shell scripts and always routes Office files cleanly through `m365-mac-mcp`.
+5. Toggle your `m365-mac-mcp` MCP connection **OFF → ON** if you changed any environment variables.
 
 ### Option B: Claude Desktop / Cline (VS Code)
 - **Claude Desktop Projects:** Upload the relevant `SKILL.md` file(s) into your Claude Project's **Project Knowledge** (or reference them directly when working in a local workspace).
@@ -42,17 +44,17 @@ Recommended MCP environment variables *(all optional — if omitted or left blan
 
 ## 3. Skill Catalog & Copy-Paste Starter Prompts
 
-| Skill | Profile Needed | Accounting / SOX Focus | File |
-| --- | --- | --- | --- |
-| **1. Financial Statement Extractor** *(EN/FR/ES)* | `EXCEL,COMPACT` | Read-only discovery, verbatim accounts, IFRS/FASB blueprint | [`financial-statement-extractor/SKILL.md`](financial-statement-extractor/SKILL.md) |
-| **2. Historical 3-Stmt Rebuilder** *(EN/FR/ES)* | `EXCEL,COMPACT` | New formula model, verbatim accounts, live source reconciliation + Fresh-Chat Handoff | [`historical-3stmt-rebuilder/SKILL.md`](historical-3stmt-rebuilder/SKILL.md) |
-| **3. Wall Street Formatter** | `EXCEL,COMPACT` | `IAS 1` / `ASC 210` presentation, SOX 404 zero-mutation | [`wall-street-formatter/SKILL.md`](wall-street-formatter/SKILL.md) |
-| **4. Model Auditor** | `EXCEL,COMPACT` | `IAS 1`/`7`, `IFRS 16`/`ASC 842`, SOX 404 read-only review | [`model-auditor/SKILL.md`](model-auditor/SKILL.md) |
-| **5. Live What-If Runner** | `EXCEL,COMPACT` | Live Excel recalc, Balance Check identity, SOX revert trail | [`live-what-if-runner/SKILL.md`](live-what-if-runner/SKILL.md) |
-| **6. 3-Statement Projector** | `EXCEL,COMPACT` | `IAS 7`/`ASC 230`, `IAS 12`/`ASC 740`, `IAS 16`/`ASC 360` + Fresh-Chat Handoff | [`three-statement-projector/SKILL.md`](three-statement-projector/SKILL.md) |
-| **7. CapEx Project Analyzer** | `EXCEL,COMPACT` | `IAS 16`/`ASC 360` capitalization, after-tax salvage, Year-0 NPV rule | [`capex-project-analyzer/SKILL.md`](capex-project-analyzer/SKILL.md) |
-| **8. DCF & Valuation Template** | `EXCEL,COMPACT` | `IFRS 16`/`ASC 842` EV Bridge parity, CAPM WACC, Dual TV | [`dcf-investment-template-builder/SKILL.md`](dcf-investment-template-builder/SKILL.md) |
-| **9. Boardroom Brief Generator** | `EXCEL,WORD` or `FULL` | IFRS/GAAP disclosure labeling, SOX live-cell traceability | [`boardroom-brief-generator/SKILL.md`](boardroom-brief-generator/SKILL.md) |
+| Skill | Version | Profile Needed | Accounting / SOX Focus | File |
+| --- | :---: | --- | --- | --- |
+| **1. Financial Statement Extractor** *(EN/FR/ES)* | `2.3.1A` | `EXCEL,COMPACT` | Read-only discovery, verbatim accounts, IFRS/FASB blueprint | [`financial-statement-extractor/SKILL.md`](financial-statement-extractor/SKILL.md) |
+| **2. Historical 3-Stmt Rebuilder** *(EN/FR/ES)* | `2.3.1A` | `EXCEL,COMPACT` | New formula model, verbatim accounts, live source reconciliation + Fresh-Chat Handoff | [`historical-3stmt-rebuilder/SKILL.md`](historical-3stmt-rebuilder/SKILL.md) |
+| **3. Wall Street Formatter** | `2.3.1A` | `EXCEL,COMPACT` | `IAS 1` / `ASC 210` presentation, SOX 404 zero-mutation | [`wall-street-formatter/SKILL.md`](wall-street-formatter/SKILL.md) |
+| **4. Model Auditor** | `2.3.1B` | `EXCEL,COMPACT` | `IAS 1`/`7`, `IFRS 16`/`ASC 842`, R1C1 wrong-period logic & SOX 404 read-only review | [`model-auditor/SKILL.md`](model-auditor/SKILL.md) |
+| **5. Live What-If Runner** | `2.3.1A` | `EXCEL,COMPACT` | Live Excel recalc, Balance Check identity, SOX revert trail | [`live-what-if-runner/SKILL.md`](live-what-if-runner/SKILL.md) |
+| **6. 3-Statement Projector** | `2.3.1A` | `EXCEL,COMPACT` | `IAS 7`/`ASC 230`, `IAS 12`/`ASC 740`, `IAS 16`/`ASC 360` + Fresh-Chat Handoff | [`three-statement-projector/SKILL.md`](three-statement-projector/SKILL.md) |
+| **7. CapEx Project Analyzer** | `2.3.1C` | `EXCEL,COMPACT` | `IAS 16`/`ASC 360` capitalization, after-tax salvage, Year-0 NPV rule | [`capex-project-analyzer/SKILL.md`](capex-project-analyzer/SKILL.md) |
+| **8. DCF & Valuation Template** | `2.3.1A` | `EXCEL,COMPACT` | `IFRS 16`/`ASC 842` EV Bridge parity, CAPM WACC, Dual TV | [`dcf-investment-template-builder/SKILL.md`](dcf-investment-template-builder/SKILL.md) |
+| **9. Boardroom Brief Generator** | `2.3.1A` | `EXCEL,WORD` or `FULL` | IFRS/GAAP disclosure labeling, SOX live-cell traceability | [`boardroom-brief-generator/SKILL.md`](boardroom-brief-generator/SKILL.md) |
 
 ---
 
@@ -101,12 +103,12 @@ Recommended MCP environment variables *(all optional — if omitted or left blan
   - *"Using `/Users/you/Desktop/Historical_3Stmt.xlsx`, project FY2026–FY2030 under US GAAP with Base, Bull, and Bear scenarios and verify live in Excel that Balance Check = 0 for every year."*
 
 ### Skill 5: `capex-project-analyzer`
-- **What it does:** Builds a 3-tab Capital Budgeting workbook (`Executive Summary`, `Project Cash Flows`, `Sensitivity & Charts`) with Year-0-safe `=NPV(...)`, `=IRR(...)`, `=MIRR(...)`, Profitability Index, Simple & Discounted Payback, 2-way WACC vs. Revenue sensitivity, and cash flow chart.
+- **What it does:** Builds a 4-tab Capital Budgeting workbook (`Executive Summary`, pure-input `Assumptions`, `Project Cash Flows`, `Sensitivity & Charts`) with Year-0-safe `=NPV(...)`, `=IRR(...)`, `=MIRR(...)`, Profitability Index, Simple & Discounted Payback, 2-way WACC vs. Cash-Flow Scale sensitivity, and cash flow chart.
 - **Starter Prompts:**
   - *"Build a CapEx analysis under US GAAP (Straight-Line depreciation) for a \$20M plant expansion over 7 years: \$8M Year-1 revenue growing 10%/yr, 35% EBITDA margin, 25% tax rate, 10% WACC, 5% NWC of revenue, and \$3M salvage value. Save to `/Users/you/Desktop/Plant_CapEx.xlsx`."*
 
 ### Skill 6: `dcf-investment-template-builder`
-- **What it does:** Creates a reusable 5-tab DCF & Multi-Stream Cash Flow Valuation template (`Dashboard`, `WACC & Inputs`, `Segment Cash Flows`, `DCF Valuation`, `Sensitivity`) with CAPM WACC, Gordon Growth + Exit Multiple Terminal Value, EV-to-Equity Bridge (consistent with `IFRS 16`/`ASC 842`), and Base/Bull/Bear controls.
+- **What it does:** Creates a reusable 5-tab DCF & Multi-Stream Cash Flow Valuation template (`Dashboard`, pure-input `Assumptions`, `Segment Cash Flows`, `DCF Valuation`, `Sensitivity`) with CAPM WACC, Gordon Growth + Exit Multiple Terminal Value, EV-to-Equity Bridge (consistent with `IFRS 16`/`ASC 842`), and Base/Bull/Bear controls.
 - **Starter Prompts:**
   - *"Build a reusable 5-year US GAAP DCF valuation template for a 2-segment SaaS + Hardware company with CAPM WACC, Gordon Growth and Exit EBITDA Multiple terminal value, EV-to-Equity Bridge, and WACC vs. Terminal Growth sensitivity. Save to `/Users/you/Desktop/DCF_Template.xlsx`."*
 

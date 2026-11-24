@@ -5,6 +5,7 @@ for Microsoft 365 for Mac MCP (m365-mac-mcp).
 
 import datetime
 import math
+import os
 import re
 from decimal import Decimal
 from pathlib import Path
@@ -14,24 +15,106 @@ _CELL_REF_RE = re.compile(r"^\$?[A-Za-z]{1,3}\$?[1-9][0-9]*$")
 _RANGE_REF_RE = re.compile(
     r"^\$?[A-Za-z]{1,3}\$?[1-9][0-9]*:\$?[A-Za-z]{1,3}\$?[1-9][0-9]*$"
 )
+_MCP_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_ACTIVE_CLIENT_PROJECT_DIR: Optional[Path] = None
+
+
+def _is_inside_project_root(resolved: Path) -> bool:
+    try:
+        return resolved == _MCP_PROJECT_ROOT or resolved.is_relative_to(_MCP_PROJECT_ROOT)
+    except AttributeError:
+        return resolved == _MCP_PROJECT_ROOT or str(resolved).startswith(str(_MCP_PROJECT_ROOT) + "/")
+
+
+def set_client_project_dir(project_dir: Optional[str | Path]) -> Optional[Path]:
+    """Register the active client/Bionic Project Working Folder (Priority #2; never inside MCP project root)."""
+    global _ACTIVE_CLIENT_PROJECT_DIR
+    if project_dir is None or not str(project_dir).strip():
+        _ACTIVE_CLIENT_PROJECT_DIR = None
+        return None
+    raw = str(project_dir).strip()
+    if raw.startswith("file://"):
+        from urllib.parse import unquote, urlparse
+        raw = unquote(urlparse(raw).path)
+    candidate = Path(raw).expanduser().resolve()
+    if _is_inside_project_root(candidate):
+        return None
+    _ACTIVE_CLIENT_PROJECT_DIR = candidate
+    return candidate
+
+
+def get_client_project_dir() -> Optional[Path]:
+    """Return the active client/Bionic Project Working Folder if safely configured outside MCP project root."""
+    if _ACTIVE_CLIENT_PROJECT_DIR is not None and not _is_inside_project_root(_ACTIVE_CLIENT_PROJECT_DIR):
+        return _ACTIVE_CLIENT_PROJECT_DIR
+    return None
+
+
+def is_within_trusted_project_dir(path: str | Path) -> bool:
+    """Return True ONLY when `path` resides strictly inside the active client/Bionic Project Working Folder."""
+    proj = get_client_project_dir()
+    if proj is None:
+        return False
+    resolved = Path(path).expanduser().resolve()
+    if _is_inside_project_root(resolved):
+        return False
+    try:
+        return resolved == proj or resolved.is_relative_to(proj)
+    except AttributeError:
+        return resolved == proj or str(resolved).startswith(str(proj) + "/")
+
+
+def get_grant_access_timeout(default: float = 45.0) -> float:
+    """Return extended timeout (30-50s, safely under MCP client 60-90s cap) for external Grant Access prompts."""
+    raw = (os.getenv("M365_MCP_GRANT_ACCESS_TIMEOUT") or "").strip()
+    if raw:
+        try:
+            val = float(raw)
+            return max(15.0, min(val, 55.0))
+        except ValueError:
+            pass
+    return default
+
+
+def get_default_output_dir() -> Optional[Path]:
+    """Return the optional safe default output folder from M365_MCP_OUTPUT_DIR (Priority #3; never inside MCP project root)."""
+    raw = (os.getenv("M365_MCP_OUTPUT_DIR") or os.getenv("OFFICE365_MCP_OUTPUT_DIR") or "").strip()
+    if not raw:
+        return None
+    candidate = Path(raw).expanduser().resolve()
+    if _is_inside_project_root(candidate):
+        return None
+    return candidate
+
+
+def assert_safe_write_path(path: Path, raw_input: Optional[str] = None) -> Path:
+    """Block writing user Office deliverables inside the MCP server's own project directory."""
+    resolved = path.expanduser().resolve()
+    if _is_inside_project_root(resolved):
+        rel_note = ""
+        if raw_input and not Path(raw_input).expanduser().is_absolute():
+            rel_note = f" (bare relative path '{raw_input}' resolved against server CWD)"
+        raise PermissionError(
+            f"Refusing to write output file inside the MCP server project folder ('{_MCP_PROJECT_ROOT}'){rel_note}. "
+            "Provide an explicit absolute or ~/ user path (such as your Project Working Folder, '~/Desktop/...', or '~/Documents/...'), "
+            "or set optional M365_MCP_OUTPUT_DIR."
+        )
+    return resolved
 
 
 def resolve_file_path(
     file_path: str,
     must_exist: bool = False,
     extensions: Optional[List[str]] = None,
+    for_write: bool = False,
 ) -> Path:
     """Expand ``~`` and resolve a POSIX file path safely.
 
-    Handles paths with spaces, parentheses, apostrophes, and Unicode cleanly.
-
-    Args:
-        file_path: Input path string.
-        must_exist: Raise ValueError if the path does not exist.
-        extensions: Optional list of allowed lowercase extensions (e.g. ['.docx']).
-
-    Returns:
-        Resolved pathlib.Path.
+    Strict resolution precedence:
+      1. Explicit absolute / ``~`` user path (always wins).
+      2. Active client / Bionic Project Working Folder (MCP ``roots/list`` or ``check_office_status(working_dir=...)``).
+      3. Optional ``M365_MCP_OUTPUT_DIR`` environment variable.
+      4. Process CWD (writes inside the MCP server's own project folder are ALWAYS blocked).
     """
     if not file_path or not isinstance(file_path, str) or not file_path.strip():
         raise ValueError("File path cannot be empty")
@@ -39,7 +122,38 @@ def resolve_file_path(
     if "\x00" in file_path:
         raise ValueError("File path contains invalid null byte")
 
-    path = Path(file_path).expanduser().resolve()
+    raw_expanded = Path(file_path).expanduser()
+    if raw_expanded.is_absolute():
+        # Priority 1: explicit user path
+        path = raw_expanded.resolve()
+    else:
+        # Priority 2: client/Bionic Project Working Folder; Priority 3: M365_MCP_OUTPUT_DIR
+        project_dir = get_client_project_dir()
+        default_dir = get_default_output_dir()
+        base_dirs = [d for d in (project_dir, default_dir) if d is not None]
+
+        if for_write and base_dirs:
+            path = (base_dirs[0] / raw_expanded).resolve()
+        elif not for_write and base_dirs:
+            chosen: Optional[Path] = None
+            for base in base_dirs:
+                cand = (base / raw_expanded).resolve()
+                if cand.exists():
+                    chosen = cand
+                    break
+            if chosen is not None:
+                path = chosen
+            else:
+                cwd_cand = raw_expanded.resolve()
+                if cwd_cand.exists() and not _is_inside_project_root(cwd_cand):
+                    path = cwd_cand
+                else:
+                    path = (base_dirs[0] / raw_expanded).resolve()
+        else:
+            path = raw_expanded.resolve()
+
+    if for_write:
+        assert_safe_write_path(path, raw_input=file_path)
 
     if must_exist and not path.exists():
         raise FileNotFoundError(f"File does not exist: {path}")

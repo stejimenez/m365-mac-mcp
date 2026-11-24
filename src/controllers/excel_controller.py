@@ -32,6 +32,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from integrations.applescript_bridge import AppleScriptBridge
 from utils.logger import setup_logger
 from utils.validators import (
+    assert_safe_write_path,
+    get_client_project_dir,
+    is_within_trusted_project_dir,
     resolve_file_path,
     sanitize_excel_write_value,
     sanitize_for_json,
@@ -932,6 +935,62 @@ class ExcelController:
             if owned_wb is not None:
                 owned_wb.close()
 
+    _R1C1_TOKEN_RE = re.compile(
+        r'"(?:""|[^"])*"|'
+        r"(?P<sheet>(?:'(?:[^']|'')+'|[A-Za-z_][A-Za-z0-9_.]*)!)?"
+        r"(?P<col_abs>\$?)(?P<col>[A-Z]{1,3})(?P<row_abs>\$?)(?P<row>[1-9]\d*)(?!\s*\()"
+    )
+
+    @classmethod
+    def _formula_to_r1c1_signature(cls, formula: str, row: int, col: int) -> str:
+        """Convert an A1 Excel formula at (row, col) into a normalized R1C1 relative signature."""
+        def _repl(match: re.Match) -> str:
+            txt = match.group(0)
+            if txt.startswith('"'):
+                return txt  # preserve string literals untouched
+            col_letters = match.group("col")
+            try:
+                c_num = column_index_from_string(col_letters)
+            except Exception:
+                return txt
+            r_num = int(match.group("row"))
+            # Guard against huge invalid column letters (Excel max XFD = 16384)
+            if c_num > 16384 or r_num > 1048576:
+                return txt
+            sheet_raw = match.group("sheet") or ""
+            if sheet_raw:
+                s_name = sheet_raw[:-1]
+                if s_name.startswith("'") and s_name.endswith("'") and len(s_name) >= 2:
+                    s_name = s_name[1:-1].replace("''", "'")
+                sheet_norm = f"{s_name.upper()}!"
+            else:
+                sheet_norm = ""
+            r_part = f"R{r_num}" if match.group("row_abs") == "$" else (
+                "R" if r_num == row else f"R[{r_num - row}]"
+            )
+            c_part = f"C{c_num}" if match.group("col_abs") == "$" else (
+                "C" if c_num == col else f"C[{c_num - col}]"
+            )
+            return f"{sheet_norm}{r_part}{c_part}"
+
+        # Normalize whitespace outside quoted strings and uppercase non-string tokens
+        parts = re.split(r'("(?:""|[^"])*")', formula.strip())
+        rebuilt: List[str] = []
+        for idx, part in enumerate(parts):
+            if idx % 2 == 1:
+                rebuilt.append(part)
+            else:
+                compact = re.sub(r"\s+", "", part).upper()
+                rebuilt.append(cls._R1C1_TOKEN_RE.sub(_repl, compact))
+        sig = "".join(rebuilt)
+        # Canonicalize pure top-level commutative additions (e.g. =RC[-1]+R[-1]C == =R[-1]C+RC[-1])
+        # so cumulative rows written in either operand order don't trigger false-positive R1C1 flags.
+        if sig.startswith("=") and "+" in sig and not any(ch in sig[1:] for ch in '-*/()^,"&<>='):
+            terms = sig[1:].split("+")
+            if all(terms):
+                sig = "=" + "+".join(sorted(terms))
+        return sig
+
     async def audit_workbook_formulas(
         self,
         workbook_id: Optional[str] = None,
@@ -1003,6 +1062,9 @@ class ExcelController:
                     "multiple",
                 )
 
+                row_inconsistencies: List[Dict[str, Any]] = []
+                total_col_keywords = ("total", "sum", "avg", "average", "cagr", "ytd", "full year", "check")
+
                 for ws in wb.worksheets:
                     ws_e = wb_eval[ws.title] if (wb_eval is not None and ws.title in wb_eval.sheetnames) else None
                     eval_rows = (
@@ -1015,6 +1077,7 @@ class ExcelController:
                     max_c = ws.max_column or 0
                     col_formula_counts: Dict[int, int] = {}
                     row_formula_counts: Dict[int, int] = {}
+                    row_formula_entries: Dict[int, List[Tuple[int, str, str, Any, str]]] = {}
                     numeric_literals: List[Tuple[int, int, Any, Any]] = []
 
                     for r in range(1, max_r + 1):
@@ -1033,11 +1096,37 @@ class ExcelController:
                                 total_formulas += 1
                                 col_formula_counts[c] = col_formula_counts.get(c, 0) + 1
                                 row_formula_counts[r] = row_formula_counts.get(r, 0) + 1
+                                r1c1_sig = self._formula_to_r1c1_signature(val, r, c)
+                                row_formula_entries.setdefault(r, []).append((c, coord, val, cached_val, r1c1_sig))
                                 sheet_ref_warnings.extend(
                                     self._inspect_formula_sheet_refs(
                                         wb, val, cell_ref=f"{ws.title}!{coord}"
                                     )
                                 )
+                                # Catch circular self-references & invalid 1-argument NPV() directly as error_cells
+                                s_no_str = re.sub(r'"[^"]*"', '""', val.strip())
+                                col_let = get_column_letter(c)
+                                self_pat = rf"(?<![A-Za-z0-9_!'$])\$?{col_let}\$?{r}(?![A-Za-z0-9_])"
+                                if re.search(self_pat, s_no_str, re.IGNORECASE):
+                                    error_cells.append({
+                                        "sheet_name": ws.title,
+                                        "cell": coord,
+                                        "row_label": row_label,
+                                        "error": "#CIRCULAR!",
+                                        "formula": val,
+                                        "cached_value": cached_val,
+                                        "reason": f"Self-referencing circular formula ({coord} references itself)",
+                                    })
+                                if re.search(r"(?<![A-Za-z0-9_])NPV\s*\(\s*[^,()]+\s*\)", s_no_str, re.IGNORECASE):
+                                    error_cells.append({
+                                        "sheet_name": ws.title,
+                                        "cell": coord,
+                                        "row_label": row_label,
+                                        "error": "#SYNTAX!",
+                                        "formula": val,
+                                        "cached_value": cached_val,
+                                        "reason": "Invalid 1-argument NPV() — NPV requires at least 2 arguments: NPV(rate, values)",
+                                    })
                             elif r > 1 and c > 1 and isinstance(val, (int, float)) and not isinstance(val, bool):
                                 numeric_literals.append((r, c, val, row_label))
 
@@ -1067,10 +1156,18 @@ class ExcelController:
                                     "reason": "Literal quote characters ('\"\"') instead of empty cell or formula",
                                 })
 
-                    # High-precision SOX 404 literal check (avoids false positives on historical input rows):
+                    # High-precision SOX 404 literal check (avoids false positives on historical input rows
+                    # and standard Year-0 / Period-0 zeros):
                     # 1. Horizontal formula-row break: same row has >=2 formulas in sibling columns.
                     # 2. Calculated-row label (Total/Subtotal/Margin/EBITDA/Check/etc.) hardcoded in a formula column (>=3 formulas).
+                    yr0_headers = {"0", "0.0", "year 0", "yr 0", "y0", "t0", "t=0", "period 0"}
                     for r, c, lit_val, row_label in numeric_literals:
+                        # Standard Period-0 / Year-0 zero (e.g., Revenue=0, Tax=0 in Year 0) is not a SOX override
+                        if lit_val == 0 and c == 2:
+                            hdr_top = str(ws.cell(row=1, column=c).value if ws.cell(row=1, column=c).value is not None else "").strip().lower()
+                            hdr_sub = str(ws.cell(row=2, column=c).value if (r > 2 and ws.cell(row=2, column=c).value is not None) else "").strip().lower()
+                            if hdr_top in yr0_headers or hdr_sub in yr0_headers:
+                                continue
                         row_f = row_formula_counts.get(r, 0)
                         col_f = col_formula_counts.get(c, 0)
                         label_low = str(row_label or "").strip().lower()
@@ -1094,6 +1191,73 @@ class ExcelController:
                                 "reason": f"Hardcoded number on calculated row '{row_label}' in formula column {get_column_letter(c)}",
                             })
 
+                    # Deterministic R1C1 financial-logic check: detect silent wrong-month / wrong-period
+                    # formula breaks in time-series rows (cells that return a valid number with zero
+                    # Excel errors, yet deviate from the row's dominant relative R1C1 formula pattern).
+                    for r, entries in row_formula_entries.items():
+                        if len(entries) < 3:
+                            continue
+                        sig_counts: Dict[str, int] = {}
+                        sig_example: Dict[str, Tuple[str, str]] = {}
+                        for _, coord, fml, _, sig in entries:
+                            sig_counts[sig] = sig_counts.get(sig, 0) + 1
+                            sig_example.setdefault(sig, (coord, fml))
+                        dominant_sig, dominant_cnt = max(sig_counts.items(), key=lambda kv: kv[1])
+                        if dominant_cnt < 2 or (dominant_cnt / len(entries)) < 0.6:
+                            continue
+                        row_label = ws.cell(row=r, column=1).value
+                        min_c = entries[0][0]
+                        max_c_row = entries[-1][0]
+                        dom_coord, dom_fml = sig_example[dominant_sig]
+                        dom_is_agg = dominant_sig.startswith(("=SUM(", "=AVERAGE(", "=NPV(", "=IRR("))
+
+                        for c, coord, fml, cached_val, sig in entries:
+                            if sig == dominant_sig:
+                                continue
+                            # Skip legitimate Period-1 seed formula on the leftmost column
+                            # (e.g., Month 1 links to Assumptions while Months 2..12 grow from prior col)
+                            if c == min_c:
+                                continue
+                            # Skip legitimate rightmost Total/Summary column (e.g., =SUM(B2:M2))
+                            col_hdr = " ".join(
+                                str(ws.cell(row=hr, column=c).value or "").strip().lower()
+                                for hr in (1, 2)
+                                if hr < r
+                            )
+                            if c == max_c_row and (
+                                any(kw in col_hdr for kw in total_col_keywords)
+                                or (not dom_is_agg and sig.startswith(("=SUM(", "=AVERAGE(", "=NPV(", "=IRR(")))
+                            ):
+                                continue
+                            expected_fml: Optional[str] = None
+                            try:
+                                expected_fml = Translator(dom_fml, origin=dom_coord).translate_formula(coord)
+                            except Exception:
+                                expected_fml = None
+                            col_hdr_display = (
+                                ws.cell(row=1, column=c).value
+                                or (ws.cell(row=2, column=c).value if r > 2 else None)
+                            )
+                            item: Dict[str, Any] = {
+                                "sheet_name": ws.title,
+                                "cell": coord,
+                                "row_label": row_label,
+                                "col_header": col_hdr_display,
+                                "formula": fml,
+                                "r1c1_signature": sig,
+                                "dominant_r1c1_pattern": dominant_sig,
+                                "sibling_matches": dominant_cnt,
+                                "cached_value": cached_val,
+                                "reason": (
+                                    f"Financial-logic inconsistency on row '{row_label or r}': "
+                                    f"R1C1 signature '{sig}' breaks dominant row pattern '{dominant_sig}' "
+                                    f"({dominant_cnt}/{len(entries)} sibling cells) — possible wrong-month / wrong-period reference."
+                                ),
+                            }
+                            if expected_fml:
+                                item["expected_formula"] = expected_fml
+                            row_inconsistencies.append(item)
+
                 ext_count = len(getattr(wb, "_external_links", []) or [])
                 audit_out: Dict[str, Any] = {
                     "status": "success",
@@ -1104,9 +1268,11 @@ class ExcelController:
                     "error_count": len(error_cells),
                     "sheet_ref_warning_count": len(sheet_ref_warnings),
                     "suspicious_literal_count": len(suspicious_literals),
+                    "row_inconsistency_count": len(row_inconsistencies),
                     "clean": (
                         len(error_cells) == 0
                         and len(sheet_ref_warnings) == 0
+                        and len(row_inconsistencies) == 0
                         and ext_count == 0
                     ),
                 }
@@ -1120,6 +1286,8 @@ class ExcelController:
                     audit_out["sheet_ref_warnings"] = sheet_ref_warnings
                 if suspicious_literals:
                     audit_out["suspicious_literals"] = suspicious_literals[:50]
+                if row_inconsistencies:
+                    audit_out["row_inconsistencies"] = row_inconsistencies[:50]
                 return audit_out
             finally:
                 if wb_eval is not None:
@@ -1172,14 +1340,99 @@ class ExcelController:
         """Return a compact, structured confirmation_required payload when formula writes are blocked."""
         return sanitize_for_json({
             "status": "confirmation_required",
+            "awaiting_user_action": True,
             "guard_mode": mode,
             "blocked_count": len(blocked),
             "blocked_cells": blocked[:10],
             "instruction": (
-                "STOP and ask the user for approval before retrying with allow_formula_overwrite=true. "
+                "HARD STOP and ask the user for approval before retrying with allow_formula_overwrite=true. "
                 "Briefly explain what you want to change and why."
             ),
         })
+
+    _CURRENCY_STR_RE = re.compile(
+        r"^(?P<neg1>-)?(?P<lparen>\()?\s*\$\s*(?P<neg2>-)?(?P<num>(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(?P<rparen>\))?$"
+    )
+    _PERCENT_STR_RE = re.compile(
+        r"^(?P<num>[+-]?(?:\d{1,3}(?:,\d{3})*|\d+)(?:\.\d+)?)%$"
+    )
+    _PLAIN_NUM_STR_RE = re.compile(r"^[+-]?(?:0|[1-9]\d*)(?:\.\d+)?$")
+
+    @classmethod
+    def _coerce_excel_write_value(cls, raw_value: Any) -> Tuple[Any, Optional[str]]:
+        """Normalize empty strings to blank cells and parse unambiguous formatted numeric strings.
+
+        Returns ``(coerced_value, inferred_number_format)``.
+        - ``""`` -> ``(None, None)`` so blank cells never trigger ``#VALUE!`` in Excel arithmetic.
+        - ``"$25,000,000"`` / ``"($4,000,000)"`` -> numeric value + currency format.
+        - ``"10.5%"`` / ``"12%"`` -> decimal float (``0.105`` / ``0.12``) + percent format.
+        - ``"6"`` / ``"0"`` -> numeric int/float (leading-zero codes like ``"00123"`` stay text).
+        - Formulas (``=...``), text with units (``"$510M"``), and literal ``'""'`` stay untouched.
+        """
+        val = sanitize_excel_write_value(raw_value)
+        if not isinstance(val, str):
+            return val, None
+        if val.startswith("="):
+            return val, None
+        if val == "":
+            return None, None
+
+        s = val.strip()
+        if not s:
+            return None, None
+
+        m_curr = cls._CURRENCY_STR_RE.match(s)
+        if m_curr:
+            has_lp = bool(m_curr.group("lparen"))
+            has_rp = bool(m_curr.group("rparen"))
+            if has_lp == has_rp:
+                num_txt = m_curr.group("num").replace(",", "")
+                is_neg = bool(m_curr.group("neg1") or m_curr.group("neg2") or (has_lp and has_rp))
+                has_dec = "." in num_txt
+                parsed: Any = float(num_txt) if has_dec else int(num_txt)
+                if is_neg:
+                    parsed = -parsed
+                fmt = '$#,##0.00;($#,##0.00);"-"' if has_dec else '$#,##0;($#,##0);"-"'
+                return parsed, fmt
+
+        m_pct = cls._PERCENT_STR_RE.match(s)
+        if m_pct:
+            num_txt = m_pct.group("num").replace(",", "")
+            parsed_pct = round(float(num_txt) / 100.0, 10)
+            dec_part = num_txt.split(".", 1)[1] if "." in num_txt else ""
+            fmt = "0.00%" if len(dec_part) >= 2 else "0.0%"
+            return parsed_pct, fmt
+
+        if cls._PLAIN_NUM_STR_RE.match(s):
+            return (float(s) if "." in s else int(s)), None
+
+        return val, None
+
+    @staticmethod
+    def _build_compact_cell_map(
+        ws,
+        start_row: int,
+        start_col: int,
+        num_rows: int,
+        num_cols: int,
+    ) -> Optional[Dict[str, str]]:
+        """Build a compact ground-truth coordinate map for small 2-3 col key-value tables (e.g. Assumptions)."""
+        if num_rows < 2 or num_rows > 30 or num_cols < 2 or num_cols > 3:
+            return None
+        val_col_letter = get_column_letter(start_col + 1)
+        cmap: Dict[str, str] = {}
+        for r in range(start_row, start_row + num_rows):
+            lbl = ws.cell(row=r, column=start_col).value
+            v = ws.cell(row=r, column=start_col + 1).value
+            if not isinstance(lbl, str) or not lbl.strip() or v is None:
+                continue
+            lbl_low = lbl.strip().lower()
+            if r == start_row and lbl_low in ("parameter", "item", "assumption", "metric", "kpi", "driver", "field", "name"):
+                continue
+            short_lbl = lbl.strip()[:36]
+            val_preview = str(v)[:40]
+            cmap[f"{val_col_letter}{r}"] = f"{short_lbl} = {val_preview}"
+        return cmap if len(cmap) >= 2 else None
 
     async def write_cell(
         self,
@@ -1197,7 +1450,7 @@ class ExcelController:
         clean_cell = validate_cell_ref(cell)
 
         wb = entry["workbook_object"]
-        clean_value = sanitize_excel_write_value(value)
+        clean_value, inferred_fmt = self._coerce_excel_write_value(value)
         is_new_formula = isinstance(clean_value, str) and clean_value.startswith("=")
 
         cell_obj = ws[clean_cell]
@@ -1224,6 +1477,8 @@ class ExcelController:
 
         if number_format:
             cell_obj.number_format = number_format
+        elif inferred_fmt and (not cell_obj.number_format or cell_obj.number_format == "General"):
+            cell_obj.number_format = inferred_fmt
         if formatting:
             self._apply_cell_formatting(cell_obj, formatting)
 
@@ -1277,7 +1532,7 @@ class ExcelController:
                 for col_idx, raw_val in enumerate(row_data):
                     existing = ws.cell(row=start_row + row_idx, column=start_col + col_idx).value
                     if isinstance(existing, str) and existing.startswith("="):
-                        clean_val = sanitize_excel_write_value(raw_val)
+                        clean_val, _ = self._coerce_excel_write_value(raw_val)
                         new_is_fml = isinstance(clean_val, str) and clean_val.startswith("=")
                         if guard_mode == "strict" or not new_is_fml:
                             blocked.append({
@@ -1297,7 +1552,7 @@ class ExcelController:
                 cell_obj = ws.cell(row=start_row + row_idx, column=start_col + col_idx)
                 if isinstance(cell_obj.value, str) and cell_obj.value.startswith("="):
                     formulas_updated += 1
-                clean_val = sanitize_excel_write_value(raw_val)
+                clean_val, inferred_fmt = self._coerce_excel_write_value(raw_val)
                 if isinstance(clean_val, str) and clean_val.startswith("="):
                     clean_val = self._normalize_formula_sheet_refs(wb, clean_val)
                     formula_warnings.extend(
@@ -1306,6 +1561,8 @@ class ExcelController:
                 cell_obj.value = clean_val
                 if number_format and (row_idx > 0 or not header_formatting):
                     cell_obj.number_format = number_format
+                elif inferred_fmt and (not cell_obj.number_format or cell_obj.number_format == "General"):
+                    cell_obj.number_format = inferred_fmt
                 if row_idx == 0 and header_formatting:
                     self._apply_cell_formatting(cell_obj, header_formatting)
                 elif formatting:
@@ -1332,15 +1589,28 @@ class ExcelController:
         return sanitize_for_json(result)
 
     @staticmethod
-    def _extract_batch_sheet_name(op: Dict[str, Any]) -> Optional[str]:
-        """Resolve sheet_name from LLM-friendly aliases (sheet_name, sheet, worksheet, worksheet_name, tab)."""
-        return (
+    def _extract_batch_sheet_name(
+        op: Dict[str, Any], default_sheet_name: Optional[str] = None
+    ) -> Optional[str]:
+        """Resolve sheet_name from explicit aliases, A1 'Sheet!Cell' prefix, or batch default."""
+        explicit = (
             op.get("sheet_name")
             or op.get("sheet")
             or op.get("worksheet")
             or op.get("worksheet_name")
             or op.get("tab")
         )
+        if explicit:
+            return str(explicit).strip()
+        for key in ("start_cell", "range", "cell_range", "cell"):
+            raw = op.get(key)
+            if raw and "!" in str(raw):
+                prefix = str(raw).rsplit("!", 1)[0].strip()
+                if prefix.startswith("'") and prefix.endswith("'") and len(prefix) >= 2:
+                    prefix = prefix[1:-1].replace("''", "'")
+                if prefix:
+                    return prefix
+        return default_sheet_name
 
     @staticmethod
     def _extract_batch_start_cell(op: Dict[str, Any]) -> str:
@@ -1365,7 +1635,8 @@ class ExcelController:
         if not isinstance(raw_data, list) or not raw_data:
             sheet_label = op.get("sheet_name") or op.get("sheet")
             format_only_keys = {
-                "number_format", "formatting", "column_widths", "row_heights",
+                "number_format", "number_formats", "formatting", "format",
+                "cell_formats", "cell_format", "column_widths", "row_heights",
                 "styles", "bold", "italic", "fill_color", "font_color", "freeze_panes",
             }
             if any(k in op for k in format_only_keys):
@@ -1483,6 +1754,7 @@ class ExcelController:
         workbook_id: Optional[str] = None,
         operations: Optional[List[Dict[str, Any]]] = None,
         allow_formula_overwrite: bool = False,
+        sheet_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Write multiple 2D ranges across one or more worksheets in a single call and save once."""
         if not operations:
@@ -1491,16 +1763,41 @@ class ExcelController:
         workbook_id = self._resolve_workbook_id(workbook_id)
         entry = self._get_entry(workbook_id)
         wb = entry["workbook_object"]
+        default_sheet = sheet_name
+
+        # Universal normalization: expand invented plural 'fill_formulas' lists cleanly
+        # so models passing {'fill_formulas': [{'range': 'B10', 'formula': '...'}]} never
+        # silently write dummy blank 'values' over existing formulas.
+        normalized_ops: List[Dict[str, Any]] = []
+        for op in operations:
+            if isinstance(op, dict) and "fill_formulas" in op:
+                ff_list = op.get("fill_formulas")
+                if not isinstance(ff_list, list) or not ff_list or not all(isinstance(x, dict) for x in ff_list):
+                    raise ValueError(
+                        "Invalid 'fill_formulas' key: use singular 'fill_formula' per operation "
+                        "(e.g. {'sheet_name': '...', 'range': 'C4:H4', 'fill_formula': '=C2*C3'})."
+                    )
+                parent_sheet = self._extract_batch_sheet_name(op, default_sheet_name=default_sheet)
+                for item in ff_list:
+                    expanded_op = dict(item)
+                    if parent_sheet and not self._extract_batch_sheet_name(expanded_op):
+                        expanded_op["sheet_name"] = parent_sheet
+                    if "formula" in expanded_op and "fill_formula" not in expanded_op:
+                        expanded_op["fill_formula"] = expanded_op.pop("formula")
+                    normalized_ops.append(expanded_op)
+            else:
+                normalized_ops.append(op)
+        operations = normalized_ops
 
         # Atomic pre-write formula guard scan across ALL operations before mutating any cell
         guard_mode = self.get_formula_guard_mode()
         if not allow_formula_overwrite and guard_mode != "off":
             blocked: List[Dict[str, Any]] = []
             for op in operations:
-                sheet_name = self._extract_batch_sheet_name(op)
+                op_sheet = self._extract_batch_sheet_name(op, default_sheet_name=default_sheet)
                 start_cell = self._extract_batch_start_cell(op)
                 data = self._resolve_batch_op_data(op)
-                ws = self._get_sheet(entry, sheet_name)
+                ws = self._get_sheet(entry, op_sheet)
                 clean_start = validate_cell_ref(start_cell)
                 col_letter, start_row = coordinate_from_string(clean_start)
                 start_col = column_index_from_string(col_letter)
@@ -1508,7 +1805,7 @@ class ExcelController:
                     for col_idx, raw_val in enumerate(row_data):
                         existing = ws.cell(row=start_row + row_idx, column=start_col + col_idx).value
                         if isinstance(existing, str) and existing.startswith("="):
-                            clean_val = sanitize_excel_write_value(raw_val)
+                            clean_val, _ = self._coerce_excel_write_value(raw_val)
                             new_is_fml = isinstance(clean_val, str) and clean_val.startswith("=")
                             if guard_mode == "strict" or not new_is_fml:
                                 blocked.append({
@@ -1522,17 +1819,18 @@ class ExcelController:
 
         results: List[Dict[str, Any]] = []
         all_warnings: List[str] = []
+        range_warnings: List[str] = []
         formulas_updated = 0
 
         for op in operations:
-            sheet_name = self._extract_batch_sheet_name(op)
+            op_sheet = self._extract_batch_sheet_name(op, default_sheet_name=default_sheet)
             start_cell = self._extract_batch_start_cell(op)
             data = self._resolve_batch_op_data(op)
             formatting = op.get("formatting")
             header_formatting = op.get("header_formatting")
             number_format = op.get("number_format")
 
-            ws = self._get_sheet(entry, sheet_name)
+            ws = self._get_sheet(entry, op_sheet)
             clean_start = validate_cell_ref(start_cell)
             col_letter, start_row = coordinate_from_string(clean_start)
             start_col = column_index_from_string(col_letter)
@@ -1544,7 +1842,7 @@ class ExcelController:
                     cell_obj = ws.cell(row=start_row + row_idx, column=start_col + col_idx)
                     if isinstance(cell_obj.value, str) and cell_obj.value.startswith("="):
                         formulas_updated += 1
-                    clean_val = sanitize_excel_write_value(raw_val)
+                    clean_val, inferred_fmt = self._coerce_excel_write_value(raw_val)
                     if isinstance(clean_val, str) and clean_val.startswith("="):
                         clean_val = self._normalize_formula_sheet_refs(wb, clean_val)
                         all_warnings.extend(
@@ -1555,6 +1853,8 @@ class ExcelController:
                     cell_obj.value = clean_val
                     if number_format and (row_idx > 0 or not header_formatting):
                         cell_obj.number_format = number_format
+                    elif inferred_fmt and (not cell_obj.number_format or cell_obj.number_format == "General"):
+                        cell_obj.number_format = inferred_fmt
                     if row_idx == 0 and header_formatting:
                         self._apply_cell_formatting(cell_obj, header_formatting)
                     elif formatting:
@@ -1562,12 +1862,41 @@ class ExcelController:
 
             end_row = start_row + len(data) - 1
             end_col = start_col + max(max_cols, 1) - 1
-            results.append({
+            actual_range = f"{clean_start}:{get_column_letter(end_col)}{end_row}"
+
+            # Detect column/row spill against explicit caller-provided A1:B2 range
+            raw_ref = str(
+                op.get("range") or op.get("cell_range") or op.get("start_cell") or ""
+            ).strip()
+            if "!" in raw_ref:
+                raw_ref = raw_ref.rsplit("!", 1)[1].strip()
+            if ":" in raw_ref and not op.get("fill_formula"):
+                try:
+                    l_ref, r_ref = [p.strip() for p in raw_ref.split(":", 1)]
+                    rc1_let, rr1 = coordinate_from_string(validate_cell_ref(l_ref))
+                    rc2_let, rr2 = coordinate_from_string(validate_cell_ref(r_ref))
+                    exp_cols = column_index_from_string(rc2_let) - column_index_from_string(rc1_let) + 1
+                    exp_rows = rr2 - rr1 + 1
+                    if max_cols > exp_cols or len(data) > exp_rows:
+                        hint_start = " Check start_cell (did you mean 'A1' instead of 'B1'?)." if start_col > 1 and max_cols > exp_cols else ""
+                        range_warnings.append(
+                            f"Range shape mismatch on '{ws.title}': requested '{raw_ref}' "
+                            f"({exp_rows}x{exp_cols}) but data was {len(data)}x{max_cols} -> "
+                            f"spilled to '{actual_range}'.{hint_start}"
+                        )
+                except Exception:
+                    pass
+
+            res_item: Dict[str, Any] = {
                 "sheet_name": ws.title,
-                "range": f"{clean_start}:{get_column_letter(end_col)}{end_row}",
+                "range": actual_range,
                 "rows_written": len(data),
                 "columns_written": max_cols,
-            })
+            }
+            cmap = self._build_compact_cell_map(ws, start_row, start_col, len(data), max_cols)
+            if cmap:
+                res_item["cell_map"] = cmap
+            results.append(res_item)
 
         await self._save_working_copy(entry)
         out: Dict[str, Any] = {
@@ -1580,6 +1909,8 @@ class ExcelController:
             out["formulas_updated"] = formulas_updated
         if all_warnings:
             out["formula_warnings"] = all_warnings
+        if range_warnings:
+            out["warnings"] = range_warnings
         return sanitize_for_json(out)
 
     async def add_formula(
@@ -1862,6 +2193,77 @@ class ExcelController:
         )
         return "auto"
 
+    def _quick_save_sanity_warnings(self, wb: Workbook) -> List[str]:
+        """Fast (~1-2ms) post-build linter run during save_workbook; returns [] when workbook is clean."""
+        warnings: List[str] = []
+        error_tokens = {"#REF!", "#NAME?", "#VALUE!", "#DIV/0!", "#N/A", "#NUM!", "#NULL!"}
+        ref_warnings: List[str] = []
+
+        for ws in wb.worksheets:
+            non_empty = 0
+            unformatted_nums = 0
+            total_nums = 0
+            sheet_errors: List[str] = []
+            circular_refs: List[str] = []
+            invalid_formulas: List[str] = []
+            max_r = ws.max_row or 0
+            max_c = ws.max_column or 0
+            for r in range(1, max_r + 1):
+                for c in range(1, max_c + 1):
+                    cell = ws.cell(row=r, column=c)
+                    val = cell.value
+                    if val is None:
+                        continue
+                    non_empty += 1
+                    if isinstance(val, str):
+                        s = val.strip()
+                        if s in error_tokens:
+                            sheet_errors.append(f"{ws.title}!{cell.coordinate} ({s})")
+                        elif s.startswith("="):
+                            ref_warnings.extend(
+                                self._inspect_formula_sheet_refs(
+                                    wb, s, cell_ref=f"{ws.title}!{cell.coordinate}"
+                                )
+                            )
+                            # Strip quoted string literals before structural formula checks
+                            s_no_str = re.sub(r'"[^"]*"', '""', s)
+                            # Self-referencing circular formula check (e.g. D17 = "=D17+E16")
+                            col_let = get_column_letter(c)
+                            self_pat = rf"(?<![A-Za-z0-9_!'$])\$?{col_let}\$?{r}(?![A-Za-z0-9_])"
+                            if re.search(self_pat, s_no_str, re.IGNORECASE):
+                                circular_refs.append(f"{ws.title}!{cell.coordinate} ({s})")
+                            # Invalid 1-argument NPV(...) check (causes Excel Parameter error -50 on open)
+                            if re.search(r"(?<![A-Za-z0-9_])NPV\s*\(\s*[^,()]+\s*\)", s_no_str, re.IGNORECASE):
+                                invalid_formulas.append(
+                                    f"{ws.title}!{cell.coordinate} ({s} — NPV() requires >=2 arguments: NPV(rate, values))"
+                                )
+                    elif isinstance(val, (int, float)) and not isinstance(val, bool):
+                        # Only flag meaningful financial amounts (>=1000) or fractional rates (0<|x|<1)
+                        abs_v = abs(val)
+                        if abs_v >= 1000 or (0 < abs_v < 1):
+                            total_nums += 1
+                            nf = (cell.number_format or "").strip()
+                            if not nf or nf == "General":
+                                unformatted_nums += 1
+
+            if non_empty == 0:
+                warnings.append(f"Worksheet '{ws.title}' is empty.")
+            if sheet_errors:
+                warnings.append(f"Excel error tokens found: {', '.join(sheet_errors[:5])}.")
+            if circular_refs:
+                warnings.append(f"Self-referencing circular formulas found: {', '.join(circular_refs[:5])}.")
+            if invalid_formulas:
+                warnings.append(f"Invalid formula syntax found: {', '.join(invalid_formulas[:5])}.")
+            if unformatted_nums >= 4 and total_nums > 0 and (unformatted_nums / total_nums) >= 0.8:
+                warnings.append(
+                    f"Sheet '{ws.title}' has {unformatted_nums} large/rate numbers still in 'General' format; "
+                    "apply currency/percent number_format rules via batch_format_workbook."
+                )
+
+        if ref_warnings:
+            warnings.extend(ref_warnings[:5])
+        return warnings
+
     async def save_workbook(
         self,
         workbook_id: Optional[str] = None,
@@ -1876,13 +2278,13 @@ class ExcelController:
         fmt = format.lower().lstrip(".")
 
         if file_path:
-            save_path = resolve_file_path(file_path, must_exist=False)
+            save_path = resolve_file_path(file_path, must_exist=False, for_write=True)
         else:
             if entry["metadata"].get("is_temporary", True):
                 raise ValueError(
                     "Workbook has no saved path yet; provide file_path to save."
                 )
-            save_path = Path(entry["working_path"])
+            save_path = assert_safe_write_path(Path(entry["working_path"]))
 
         if not save_path.suffix:
             save_path = save_path.with_suffix(f".{fmt}")
@@ -1929,6 +2331,7 @@ class ExcelController:
                         open_live_wb = None
 
             self._ensure_valid_excel_table_headers(wb)
+            sanity_warnings = self._quick_save_sanity_warnings(wb)
             await asyncio.to_thread(wb.save, str(save_path))
             entry["working_path"] = save_path
             entry["metadata"]["file_path"] = str(save_path)
@@ -1936,6 +2339,7 @@ class ExcelController:
             entry["dirty"] = False
             logger.info(f"Saved workbook to {save_path}")
 
+            reopen_timed_out = False
             if open_live_wb is not None:
                 try:
                     reopen_res = await self.applescript.open_excel_file(
@@ -1947,6 +2351,13 @@ class ExcelController:
                         view_restored = await self.applescript.restore_excel_workbook_view_state(
                             reopened_name, captured_view
                         )
+                except TimeoutError as exc:
+                    reopen_timed_out = True
+                    live_sync_warning = (
+                        f"Saved to disk cleanly, but Microsoft Excel timed out auto-reopening '{save_path.name}' "
+                        f"(likely waiting on a macOS 'Grant Access' or modal dialog): {exc}"
+                    )
+                    logger.warning(live_sync_warning)
                 except Exception as exc:
                     live_sync_warning = (
                         f"Saved to disk cleanly, but could not auto-reopen in Excel: {exc}"
@@ -1964,6 +2375,20 @@ class ExcelController:
                 out["view_restored"] = view_restored
             if live_sync_warning:
                 out["live_sync_warning"] = live_sync_warning
+            if reopen_timed_out:
+                out["awaiting_user_action"] = True
+                out["hint"] = (
+                    "HARD STOP IMMEDIATELY: the file saved to disk, but Microsoft Excel is likely waiting on a "
+                    "macOS 'Grant Access' or modal dialog while reloading. Do NOT run live reads or downstream steps; "
+                    "ask the user to click 'Grant Access' / dismiss the Excel dialog and reply 'continue'."
+                )
+            if sanity_warnings:
+                out["sanity_warnings"] = sanity_warnings
+            if get_client_project_dir() is not None and not is_within_trusted_project_dir(save_path):
+                out["grant_access_notice"] = (
+                    "Saved outside the active Project Working Folder; opening this file live in Microsoft Excel "
+                    "may prompt the user for macOS Grant Access."
+                )
             return sanitize_for_json(out)
 
         if fmt == "csv":
@@ -1991,13 +2416,26 @@ class ExcelController:
         if fmt == "pdf":
             pdf_staging: Optional[Path] = None
             source_for_pdf = Path(entry["working_path"])
-            if entry.get("dirty") or entry["metadata"].get("is_temporary", True) or not source_for_pdf.exists():
+            in_trusted_project = is_within_trusted_project_dir(save_path)
+            needs_staging = (
+                entry.get("dirty")
+                or entry["metadata"].get("is_temporary", True)
+                or not source_for_pdf.exists()
+                or (in_trusted_project and not is_within_trusted_project_dir(source_for_pdf))
+            )
+            if needs_staging:
                 ext = ".xlsm" if entry["metadata"].get("keep_vba") else ".xlsx"
-                pdf_staging = self.temp_dir / f"pdf_stage_{uuid.uuid4()}{ext}"
+                # Stage inside save_path.parent when exporting within the trusted Project Working Folder
+                # so LaunchServices opens it cleanly with zero stray Grant Access prompts; unlink in finally.
+                stage_dir = save_path.parent if in_trusted_project else self.temp_dir
+                stage_prefix = ".m365_pdf_stage_" if in_trusted_project else "pdf_stage_"
+                pdf_staging = stage_dir / f"{stage_prefix}{uuid.uuid4()}{ext}"
                 await asyncio.to_thread(wb.save, str(pdf_staging))
                 source_for_pdf = pdf_staging
             open_res = await self.applescript.open_excel_file(
-                str(source_for_pdf), read_only=True, activate=False
+                str(source_for_pdf),
+                read_only=not in_trusted_project,
+                activate=False,
             )
             live_name = open_res["workbook_name"]
             try:

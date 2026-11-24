@@ -1,9 +1,10 @@
 ---
 name: financial-statement-extractor
-description: Read-only discovery of raw company Excel files (EN/FR/ES) to map historical years and verbatim accounts into an IFRS/FASB blueprint.
+version: 2.3.1A
+description: "[v2.3.1A] Read-only discovery of raw company Excel files (EN/FR/ES) to map historical years and verbatim accounts into an IFRS/FASB blueprint."
 ---
 
-# Financial Statement Extractor & Account Mapper (IFRS / FASB / SOX)
+# Financial Statement Extractor & Account Mapper (IFRS / FASB / SOX) (v2.3.1A)
 
 ## 1. Trigger & Scope
 - **Triggers (Natural Language — EN / FR / ES):** *"Extract the historical financials from this file"* / *"Extrais les états financiers historiques de ce fichier"* / *"Extrae los estados financieros históricos de este Excel y mapéalos bajo IFRS/GAAP."*

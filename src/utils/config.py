@@ -2,12 +2,14 @@
 Configuration management for Microsoft 365 for Mac MCP (m365-mac-mcp).
 """
 
+import io
 import json
 import os
 import tempfile
+import zipfile
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence, Union
 
 
 @dataclass
@@ -22,6 +24,10 @@ class ServerConfig:
     applescript_timeout: float = 30.0
     enable_applescript: bool = True
     enable_cloud_api: bool = False
+    templates_dir: Optional[str] = None
+    ppt_template: Optional[str] = None
+    word_template: Optional[str] = None
+    output_dir: Optional[str] = None
 
 
 class Config:
@@ -60,6 +66,10 @@ class Config:
             "applescript_timeout": os.getenv("M365_MCP_APPLESCRIPT_TIMEOUT") or os.getenv("OFFICE365_MCP_APPLESCRIPT_TIMEOUT"),
             "enable_applescript": os.getenv("M365_MCP_ENABLE_APPLESCRIPT") or os.getenv("OFFICE365_MCP_ENABLE_APPLESCRIPT"),
             "enable_cloud_api": os.getenv("M365_MCP_ENABLE_CLOUD_API") or os.getenv("OFFICE365_MCP_ENABLE_CLOUD_API"),
+            "templates_dir": os.getenv("M365_MCP_TEMPLATES_DIR") or os.getenv("OFFICE365_MCP_TEMPLATES_DIR"),
+            "ppt_template": os.getenv("M365_MCP_PPT_TEMPLATE") or os.getenv("OFFICE365_MCP_PPT_TEMPLATE"),
+            "word_template": os.getenv("M365_MCP_WORD_TEMPLATE") or os.getenv("OFFICE365_MCP_WORD_TEMPLATE"),
+            "output_dir": os.getenv("M365_MCP_OUTPUT_DIR") or os.getenv("OFFICE365_MCP_OUTPUT_DIR"),
         }
 
         for key, value in env_overrides.items():
@@ -67,9 +77,15 @@ class Config:
                 continue
             value = value.strip()
             if key in ("max_presentations", "max_documents", "max_workbooks"):
-                config_data[key] = int(value)
+                try:
+                    config_data[key] = int(value)
+                except ValueError:
+                    continue
             elif key == "applescript_timeout":
-                config_data[key] = float(value)
+                try:
+                    config_data[key] = float(value)
+                except ValueError:
+                    continue
             elif key in ("enable_applescript", "enable_cloud_api"):
                 config_data[key] = value.lower() in ("true", "1", "yes")
             else:
@@ -95,3 +111,90 @@ class Config:
         """Set a configuration value."""
         if hasattr(self.settings, key):
             setattr(self.settings, key, value)
+
+
+def resolve_template_path(
+    explicit_path: Optional[str],
+    default_env_var: str,
+    allowed_extensions: Sequence[str] = (".pptx", ".potx", ".docx", ".dotx"),
+) -> Optional[Path]:
+    """Resolve an explicit or default corporate template path.
+
+    Resolution order:
+    1. ``explicit_path`` (if provided): treated as a direct path if it exists, or looked up
+       inside ``M365_MCP_TEMPLATES_DIR`` when given as a bare filename/relative path.
+    2. ``os.getenv(default_env_var)`` (e.g. ``M365_MCP_PPT_TEMPLATE`` or
+       ``M365_MCP_WORD_TEMPLATE``): resolved the same way against ``M365_MCP_TEMPLATES_DIR``.
+    3. ``None`` when neither is configured (blank default).
+    """
+    raw = (explicit_path or "").strip()
+    is_explicit = bool(raw)
+    if not raw:
+        raw = (os.getenv(default_env_var) or "").strip()
+    if not raw:
+        return None
+
+    templates_dir_raw = (
+        os.getenv("M365_MCP_TEMPLATES_DIR") or os.getenv("OFFICE365_MCP_TEMPLATES_DIR") or ""
+    ).strip()
+    templates_dir = Path(templates_dir_raw).expanduser().resolve() if templates_dir_raw else None
+
+    candidate = Path(raw).expanduser()
+    resolved: Optional[Path] = None
+    if candidate.is_absolute():
+        if candidate.exists():
+            resolved = candidate.resolve()
+    else:
+        if templates_dir is not None and (templates_dir / candidate).exists():
+            resolved = (templates_dir / candidate).resolve()
+        elif candidate.exists():
+            resolved = candidate.resolve()
+
+    if resolved is None:
+        if is_explicit:
+            hint = f" (also checked M365_MCP_TEMPLATES_DIR='{templates_dir}')" if templates_dir else ""
+            raise FileNotFoundError(f"Template file not found: '{raw}'{hint}")
+        # Default env var points to missing file — fall back gracefully rather than breaking creation
+        return None
+
+    ext = resolved.suffix.lower()
+    allowed_lower = {e.lower() for e in allowed_extensions}
+    if allowed_lower and ext not in allowed_lower:
+        raise ValueError(
+            f"Unsupported template extension '{ext}' for '{resolved.name}'. "
+            f"Allowed: {sorted(allowed_lower)}"
+        )
+    return resolved
+
+
+def open_office_template(path: Path) -> Union[str, io.BytesIO]:
+    """Return a python-pptx/python-docx compatible source for .pptx/.docx/.potx/.dotx templates.
+
+    python-pptx and python-docx reject .potx/.dotx strictly because of the OOXML main part
+    content-type string in ``[Content_Types].xml``. For .potx/.dotx, rewrite that single
+    content-type in an in-memory BytesIO copy so corporate templates load seamlessly.
+    """
+    ext = path.suffix.lower()
+    if ext not in (".potx", ".dotx"):
+        return str(path)
+
+    replacements = {
+        ".potx": (
+            b"application/vnd.openxmlformats-officedocument.presentationml.template.main+xml",
+            b"application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml",
+        ),
+        ".dotx": (
+            b"application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml",
+            b"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+        ),
+    }
+    old_ct, new_ct = replacements[ext]
+    buf = io.BytesIO()
+    with zipfile.ZipFile(path, "r") as zin, zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename == "[Content_Types].xml":
+                data = data.replace(old_ct, new_ct)
+            zout.writestr(item, data)
+    buf.seek(0)
+    return buf

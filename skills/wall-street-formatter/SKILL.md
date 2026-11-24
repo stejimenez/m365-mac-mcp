@@ -1,9 +1,10 @@
 ---
 name: wall-street-formatter
-description: Format Excel financial statements Wall Street style (colors, borders, formats, widths) via m365-mac-mcp without altering values.
+version: 2.3.1A
+description: "[v2.3.1A] Format Excel financial statements Wall Street style (colors, borders, formats, widths) via m365-mac-mcp without altering values."
 ---
 
-# Wall Street Financial Model Formatter
+# Wall Street Financial Model Formatter (v2.3.1A)
 
 ## 1. Trigger & Scope
 - **Triggers:** *"Format this workbook Wall Street style"*, *"Make this model board-ready"*, *"Style these financial statements."*

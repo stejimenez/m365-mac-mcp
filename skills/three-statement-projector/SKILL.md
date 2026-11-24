@@ -1,9 +1,10 @@
 ---
 name: three-statement-projector
-description: Build dynamic IFRS/FASB multi-year 3-statement Excel projections with Base/Bull/Bear scenarios and live Balance Check = 0.
+version: 2.3.1A
+description: "[v2.3.1A] Build dynamic IFRS/FASB multi-year 3-statement Excel projections with Base/Bull/Bear scenarios and live Balance Check = 0."
 ---
 
-# 3-Statement Financial Projector (IFRS / FASB / SOX)
+# 3-Statement Financial Projector (IFRS / FASB / SOX) (v2.3.1A)
 
 ## 1. Trigger & Scope
 - **Triggers:** *"Project FY26–FY30 with Base/Bull/Bear scenarios"*, *"Build a 5-year 3-statement forecast from these historicals."*
@@ -27,7 +28,7 @@ description: Build dynamic IFRS/FASB multi-year 3-statement Excel projections wi
 
 ## 4. Accounting (IFRS / FASB), SOX & Formula Guardrails
 - **IFRS / FASB:** Interest Paid = Operating and Dividends Paid = Financing under FASB `ASC 230` (or consistently labeled per `IAS 7` under IFRS). Zero undocumented Balance Sheet plugs.
-- **SOX 404:** Centralize blue inputs on `Assumptions`; zero hardcoded calculated rows; obey `M365_MCP_FORMULA_GUARD`.
+- **SOX 404:** Centralize ALL raw blue input drivers exclusively on `Assumptions` (NEVER put calculated statement totals or KPIs on `Assumptions`); zero hardcoded calculated rows; obey `M365_MCP_FORMULA_GUARD`.
 
 ## 5. Verification & Output Gate
 Run `audit_workbook_formulas` (`clean: true`, `external_links_count: 0`) AND `excel_live_open` + `excel_live_batch_read_ranges` proving `Balance Check == 0` across every projected year, output a compact KPI table in plain finance language (never mention internal tool/skill names), and add a 1-line **Fresh-Chat Handoff Note**: *Saved to `<path>`. If your chat context is >50%, start a **New Chat** with this file path before running a DCF valuation, sensitivity test, or executive brief.*

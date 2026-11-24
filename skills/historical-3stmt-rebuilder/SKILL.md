@@ -1,9 +1,10 @@
 ---
 name: historical-3stmt-rebuilder
-description: Rebuild raw company Excel financials (EN/FR/ES) into a new IFRS/FASB/SOX formula-driven 3-statement model with live reconciliation.
+version: 2.3.1A
+description: "[v2.3.1A] Rebuild raw company Excel financials (EN/FR/ES) into a new IFRS/FASB/SOX formula-driven 3-statement model with live reconciliation."
 ---
 
-# Historical 3-Statement Model Rebuilder (IFRS / FASB / SOX)
+# Historical 3-Statement Model Rebuilder (IFRS / FASB / SOX) (v2.3.1A)
 
 ## 1. Trigger & Scope
 - **Triggers (Natural Language — EN / FR / ES):** *"Build the clean formula model from this company file"* / *"Construis le modèle 3 états avec formules"* / *"Reconstruye este Excel en un modelo IFRS/FASB limpio con todas las fórmulas y validaciones."*
