@@ -4,7 +4,7 @@
 > These Finance Skills are actively evolving as we test new workflows on local Apple Silicon models and refine accounting/modeling edge cases. Feedback, real-world test cases, and suggestions are welcome (`stejimenez@gmail.com`).
 
 **Author:** Sterling Jimenez, Ph.D. (stejimenez@gmail.com)  
-**Finance Skills Suite Version:** `v2.3.1` *(each skill carries an independent project-anchored version `<ProjectVer><Letter>`, e.g., `2.3.1A` → `2.3.1B`, visible in Bionic's Skills UI via `[v2.3.1A]` in `description:`)*
+**Finance Skills Suite Version:** `v2.4.0` *(each skill carries an independent project-anchored version `<ProjectVer><Letter>`, e.g., `2.3.1A` → `2.3.1B`, visible in Bionic's Skills UI via `[v2.3.1A]` in `description:`)*
 
 This folder contains **9 ready-to-use**, pure-Markdown (**2.5–4.0 KB** each) **Finance Skills (`SKILL.md`)** supporting **natural-language prompts in English, French, and Spanish (EN / FR / ES)** so **non-technical finance professionals** can run institutional Excel, Word, and PowerPoint workflows—powered by **`m365-mac-mcp`**.
 
@@ -18,10 +18,11 @@ Before using these skills, make sure **`m365-mac-mcp`** is installed and connect
 
 Recommended MCP environment variables *(all optional — if omitted or left blank in Bionic, the server automatically applies its safe defaults: `full`, `auto`, `literals_only`; legacy `OFFICE_MCP_*` names remain supported)*:
 - `M365_MCP_PROFILE`:
-  - **`EXCEL,COMPACT`** *(25 tools, ~2.4K schema tokens — recommended)* or **`EXCEL`** *(50 tools, ~4.8K)* — covers **all 8 Excel skills** (`financial-statement-extractor`, `historical-3stmt-rebuilder`, `wall-street-formatter`, `model-auditor`, `live-what-if-runner`, `three-statement-projector`, `capex-project-analyzer`, `dcf-investment-template-builder`), including `create_chart`, `delete_worksheet`, and `excel_live_list_workbooks`.
-  - **`FULL`** *(82 tools, ~7.4K schema tokens)* or **`EXCEL,WORD`** — required for **`boardroom-brief-generator`** (Excel → Word/PDF/PowerPoint).
+  - **`EXCEL,COMPACT`** *(25 tools, ~2.7K schema tokens — recommended)* or **`EXCEL`** *(50 tools, ~5.1K)* — covers **all 8 Excel skills** (`financial-statement-extractor`, `historical-3stmt-rebuilder`, `wall-street-formatter`, `model-auditor`, `live-what-if-runner`, `three-statement-projector`, `capex-project-analyzer`, `dcf-investment-template-builder`), including `create_chart`, `delete_worksheet`, and `excel_live_list_workbooks`.
+  - **`FULL`** *(83 tools, ~7.8K schema tokens)* or **`EXCEL,WORD`** *(75 tools)* / secondary **`WORD,POWERPOINT`** *(34 tools, ~2.8K)* — required for **`boardroom-brief-generator`** (Excel → Word/PDF/PowerPoint).
 - `M365_MCP_LIVE_SYNC=AUTO` — automatically reloads your open Excel window and restores your exact sheet, zoom, and selection after `save_workbook` (and refuses to overwrite if you have unsaved edits).
 - `M365_MCP_FORMULA_GUARD=LITERALS_ONLY` *(default)* — blocks any accidental overwrite of an existing formula with a hardcoded number or blank (`STRICT` blocks even Formula → Formula edits on finalized models).
+- `M365_MCP_BACKGROUND_MODE=no_focus` *(default)* — keeps live Office operations in the background (`open -g -j`, minimizes newly opened MCP windows, and restores your active Excel workbook / Word document) so stray keystrokes never hit an MCP-managed file while you multitask (`strict` hides MCP windows completely; `off` restores legacy foreground focus).
 
 ---
 
@@ -30,8 +31,8 @@ Recommended MCP environment variables *(all optional — if omitted or left blan
 ### Option A: Bionic / LM Studio (Recommended Local Apple Silicon Setup)
 1. Open **Bionic → Settings → Skills**.
 2. Click **Add / Import Skill** and select the `skills/` folder (or individual `skills/<skill-name>/SKILL.md` files).
-3. **Recommended Finance System Prompt (`V3.4`):**  
-   Copy [`Sample Model Config/SYSTEM_PROMPT.md`](../Sample%20Model%20Config/SYSTEM_PROMPT.md) (`UNIVERSAL STERLING ENGINE V3.4 — FINANCE & M365 SPECIALIST`) into your **Finance Project** System Prompt (works across both wrapper clients like Bionic and native MCP clients/CLIs). It anchors MCP routing (`check_office_status`), blocks built-in Office viewers, folder/shell/Python bypasses, and non-MCP document/canvas skills while letting your custom Finance skills load cleanly, enforces `M365_MCP_FORMULA_GUARD`, and prevents mental calculation of uncached `openpyxl` formulas.
+3. **Recommended Finance System Prompt (`V3.5`):**  
+   Copy [`Sample Model Config/SYSTEM_PROMPT.md`](../Sample%20Model%20Config/SYSTEM_PROMPT.md) (`UNIVERSAL STERLING ENGINE V3.5 — FINANCE & M365 SPECIALIST`) into your **Finance Project** System Prompt (works across both wrapper clients like Bionic and native MCP clients/CLIs). It anchors MCP routing (`check_office_status`), blocks built-in Office viewers, folder/shell/Python bypasses, and non-MCP document/canvas skills while letting your custom Finance skills load cleanly, enforces `M365_MCP_FORMULA_GUARD`, and prevents mental calculation of uncached `openpyxl` formulas.
    > **Disclosure:** Applying `Sample Model Config/SYSTEM_PROMPT.md` **highly customizes the model for financial modeling, corporate valuation, Excel/VBA, and Microsoft 365 work only**. If you also use Bionic / LM Studio for general-purpose chat or non-finance software development, apply it to a dedicated Finance Project instead of your global default prompt.
 4. **Disable Shell Commands in Bionic (Strongly Recommended):** In the Bionic chat composer (next to `+`), set **Command approvals → `Off` (*Don't allow shell commands*)** so the agent cannot fall back to ad-hoc Python/shell scripts and always routes Office files cleanly through `m365-mac-mcp`.
 5. Toggle your `m365-mac-mcp` MCP connection **OFF → ON** if you changed any environment variables.
@@ -46,15 +47,15 @@ Recommended MCP environment variables *(all optional — if omitted or left blan
 
 | Skill | Version | Profile Needed | Accounting / SOX Focus | File |
 | --- | :---: | --- | --- | --- |
-| **1. Financial Statement Extractor** *(EN/FR/ES)* | `2.3.1A` | `EXCEL,COMPACT` | Read-only discovery, verbatim accounts, IFRS/FASB blueprint | [`financial-statement-extractor/SKILL.md`](financial-statement-extractor/SKILL.md) |
-| **2. Historical 3-Stmt Rebuilder** *(EN/FR/ES)* | `2.3.1A` | `EXCEL,COMPACT` | New formula model, verbatim accounts, live source reconciliation + Fresh-Chat Handoff | [`historical-3stmt-rebuilder/SKILL.md`](historical-3stmt-rebuilder/SKILL.md) |
-| **3. Wall Street Formatter** | `2.3.1A` | `EXCEL,COMPACT` | `IAS 1` / `ASC 210` presentation, SOX 404 zero-mutation | [`wall-street-formatter/SKILL.md`](wall-street-formatter/SKILL.md) |
-| **4. Model Auditor** | `2.3.1B` | `EXCEL,COMPACT` | `IAS 1`/`7`, `IFRS 16`/`ASC 842`, R1C1 wrong-period logic & SOX 404 read-only review | [`model-auditor/SKILL.md`](model-auditor/SKILL.md) |
-| **5. Live What-If Runner** | `2.3.1A` | `EXCEL,COMPACT` | Live Excel recalc, Balance Check identity, SOX revert trail | [`live-what-if-runner/SKILL.md`](live-what-if-runner/SKILL.md) |
-| **6. 3-Statement Projector** | `2.3.1A` | `EXCEL,COMPACT` | `IAS 7`/`ASC 230`, `IAS 12`/`ASC 740`, `IAS 16`/`ASC 360` + Fresh-Chat Handoff | [`three-statement-projector/SKILL.md`](three-statement-projector/SKILL.md) |
-| **7. CapEx Project Analyzer** | `2.3.1C` | `EXCEL,COMPACT` | `IAS 16`/`ASC 360` capitalization, after-tax salvage, Year-0 NPV rule | [`capex-project-analyzer/SKILL.md`](capex-project-analyzer/SKILL.md) |
-| **8. DCF & Valuation Template** | `2.3.1A` | `EXCEL,COMPACT` | `IFRS 16`/`ASC 842` EV Bridge parity, CAPM WACC, Dual TV | [`dcf-investment-template-builder/SKILL.md`](dcf-investment-template-builder/SKILL.md) |
-| **9. Boardroom Brief Generator** | `2.3.1A` | `EXCEL,WORD` or `FULL` | IFRS/GAAP disclosure labeling, SOX live-cell traceability | [`boardroom-brief-generator/SKILL.md`](boardroom-brief-generator/SKILL.md) |
+| **1. Financial Statement Extractor** *(EN/FR/ES)* | `2.3.1B` | `EXCEL,COMPACT` | Read-only discovery, verbatim accounts, IFRS/FASB blueprint | [`financial-statement-extractor/SKILL.md`](financial-statement-extractor/SKILL.md) |
+| **2. Historical 3-Stmt Rebuilder** *(EN/FR/ES)* | `2.3.1D` | `EXCEL,COMPACT` | New formula model, verbatim accounts, live source reconciliation + Fresh-Chat Handoff | [`historical-3stmt-rebuilder/SKILL.md`](historical-3stmt-rebuilder/SKILL.md) |
+| **3. Wall Street Formatter** | `2.3.1D` | `EXCEL,COMPACT` | `IAS 1` / `ASC 210` presentation, SOX 404 zero-mutation | [`wall-street-formatter/SKILL.md`](wall-street-formatter/SKILL.md) |
+| **4. Model Auditor** | `2.3.1C` | `EXCEL,COMPACT` | `IAS 1`/`7`, `IFRS 16`/`ASC 842`, R1C1 wrong-period logic & SOX 404 read-only review | [`model-auditor/SKILL.md`](model-auditor/SKILL.md) |
+| **5. Live What-If Runner** | `2.3.1C` | `EXCEL,COMPACT` | Live Excel recalc, Balance Check identity, SOX revert trail | [`live-what-if-runner/SKILL.md`](live-what-if-runner/SKILL.md) |
+| **6. 3-Statement Projector** | `2.3.1D` | `EXCEL,COMPACT` | `IAS 7`/`ASC 230`, `IAS 12`/`ASC 740`, `IAS 16`/`ASC 360` + Fresh-Chat Handoff | [`three-statement-projector/SKILL.md`](three-statement-projector/SKILL.md) |
+| **7. CapEx Project Analyzer** | `2.3.1J` | `EXCEL,COMPACT` | `IAS 16`/`ASC 360` capitalization, after-tax salvage, Year-0 NPV rule | [`capex-project-analyzer/SKILL.md`](capex-project-analyzer/SKILL.md) |
+| **8. DCF & Valuation Template** | `2.3.1F` | `EXCEL,COMPACT` | `IFRS 16`/`ASC 842` EV Bridge parity, CAPM WACC, Dual TV | [`dcf-investment-template-builder/SKILL.md`](dcf-investment-template-builder/SKILL.md) |
+| **9. Boardroom Brief Generator** | `2.3.1C` | `EXCEL,WORD` or `FULL` | IFRS/GAAP disclosure labeling, SOX live-cell traceability | [`boardroom-brief-generator/SKILL.md`](boardroom-brief-generator/SKILL.md) |
 
 ---
 
@@ -79,7 +80,7 @@ Recommended MCP environment variables *(all optional — if omitted or left blan
 ---
 
 ### Skill 1: `wall-street-formatter`
-- **What it does:** Applies institutional Wall Street styling in one `batch_format_workbook` call (blue inputs, black same-sheet formulas, green cross-sheet links, navy `#1F4E79` headers, `#D9E1F2` bold totals with thin/double borders, contiguous currency & `%`/CAGR formatting, freeze panes, column widths) without touching any values or formulas.
+- **What it does:** Applies layout-agnostic institutional Wall Street styling in one `batch_format_workbook` call across single or multi-table worksheets (auto-detecting title blocks, headers anywhere on the sheet, blue inputs, black same-sheet formulas, green cross-sheet links, Smart Magnitude currency scaling, `#D9E1F2` bold totals with thin/double borders, `freeze_panes="auto"`, and auto-fitted column widths) without touching any values or formulas.
 - **Starter Prompts:**
   - *"Format `/Users/you/Desktop/Model.xlsx` Wall Street style and keep it board-ready."*
   - *"Apply institutional formatting to all three financial statements in `AAPL_Model.xlsx` without changing any numbers or formulas."*
@@ -113,7 +114,7 @@ Recommended MCP environment variables *(all optional — if omitted or left blan
   - *"Build a reusable 5-year US GAAP DCF valuation template for a 2-segment SaaS + Hardware company with CAPM WACC, Gordon Growth and Exit EBITDA Multiple terminal value, EV-to-Equity Bridge, and WACC vs. Terminal Growth sensitivity. Save to `/Users/you/Desktop/DCF_Template.xlsx`."*
 
 ### Skill 7: `boardroom-brief-generator`
-- **What it does:** Audits and reads live-recalculated KPIs from Excel and produces a styled executive Word memo (`.docx` + `.pdf`) and/or PowerPoint deck (`.pptx`) with 100% numeric traceability.
+- **What it does:** Audits and reads live-recalculated KPIs from Excel and produces a styled executive Word memo (`.docx` + `.pdf`) and/or a 16:9 PowerPoint deck (`.pptx` via 1-call `batch_add_slides`) with 100% numeric traceability.
 - **Starter Prompts:**
   - *"Read the live recalculated FY2021–FY2025 KPIs from `/Users/you/Desktop/AAPL_FullExcel_Test.xlsx` and generate a 1-page executive Word memo (`.docx` and `.pdf`) for the CFO."*
 

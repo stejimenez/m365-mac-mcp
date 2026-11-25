@@ -54,8 +54,11 @@ class Config:
                         config_data = {
                             k: v for k, v in loaded.items() if k in valid_keys
                         }
-            except Exception:
-                pass
+            except Exception as exc:
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    f"Ignoring invalid config file '{self.config_file}': {exc}"
+                )
 
         env_overrides = {
             "log_level": os.getenv("M365_MCP_LOG_LEVEL") or os.getenv("OFFICE365_MCP_LOG_LEVEL"),

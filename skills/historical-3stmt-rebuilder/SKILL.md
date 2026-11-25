@@ -1,10 +1,10 @@
 ---
 name: historical-3stmt-rebuilder
-version: 2.3.1A
-description: "[v2.3.1A] Rebuild raw company Excel financials (EN/FR/ES) into a new IFRS/FASB/SOX formula-driven 3-statement model with live reconciliation."
+version: 2.3.1D
+description: "[v2.3.1D] Rebuild raw company Excel financials (EN/FR/ES) into a new IFRS/FASB/SOX formula-driven 3-statement model with Smart Magnitude & live proof."
 ---
 
-# Historical 3-Statement Model Rebuilder (IFRS / FASB / SOX) (v2.3.1A)
+# Historical 3-Statement Model Rebuilder (IFRS / FASB / SOX) (v2.3.1D)
 
 ## 1. Trigger & Scope
 - **Triggers (Natural Language — EN / FR / ES):** *"Build the clean formula model from this company file"* / *"Construis le modèle 3 états avec formules"* / *"Reconstruye este Excel en un modelo IFRS/FASB limpio con todas las fórmulas y validaciones."*
@@ -15,13 +15,13 @@ description: "[v2.3.1A] Rebuild raw company Excel financials (EN/FR/ES) into a n
 - Otherwise, locate the source path (via `excel_live_list_workbooks()` if open), call `open_workbook` + `list_worksheets` + `inspect_workbook(workbook_id=..., sheet_names=[...], max_rows_per_sheet=150)` on the 3 statement tabs, then `close_workbook`.
 - Confirm output path (default: `<SourceName>_Clean_Model.xlsx` in the same folder—**never** overwrite the raw source file) and IFRS vs. FASB basis if ambiguous.
 
-## 3. Exact m365-mac-mcp Tool Sequence
-1. **Create New 3-Tab Workbook (1 Call):** Call `create_workbook(title=..., sheet_names=["Income Statement", "Balance Sheet", "Cash Flow"])` *(or keep original EN/FR/ES statement tab names if requested)*.
-2. **Populate All 3 Tabs (1 `batch_write_ranges` Call/Sheet — Labels/Inputs + `fill_formula` across formula rows, ZERO mental math):**
-   - Preserve every company-specific account name **verbatim** across all available historical years plus a trailing CAGR/Avg column on the Income Statement.
-   - Replace every hardcoded subtotal, total, margin (`%`), and CAGR with dynamic Excel formulas; link `Cash Flow!Net Income` to `'Income Statement'!Net Income`.
-   - Keep audited historical Cash Flow & Equity input lines faithful to the source filing (do not distort reported CFO when FX/M&A exists), and add explicit **Validation & Reconciliation Check** rows: `Balance Check (=Total Assets - Total L&E)`, `Cash Check (=BS Cash - CF Ending Cash)`, and `NI Link Check`.
-3. **Add Controls & Save:** Call `add_data_validation` on key non-negative driver/check cells as appropriate, optionally apply basic structure formatting via `batch_format_workbook`, and call `save_workbook(workbook_id=..., file_path="<Company>_Clean_Model.xlsx")` + `close_workbook`.
+## 3. Exact Office MCP Tool Sequence
+1. **Create New 3-Tab Workbook + 4-Line Headers (1 Call):** Call `create_workbook(title=..., sheet_names=["Income Statement", "Balance Sheet", "Cash Flow"], header_metadata={"entity": "<Company>", "period": "Fiscal Years: ...", "currency": "<ISO>", "magnitude": "auto"})` *(tables start Row 6; keep EN/FR/ES tab names if requested)*.
+2. **Populate All 3 Tabs (1 `batch_write_ranges` Call/Sheet — Labels/Inputs + `fill_formula`, ZERO mental math):**
+   - Preserve every company-specific account name **verbatim** across all historical years plus trailing CAGR/Avg on IS.
+   - Replace every hardcoded subtotal, total, margin (`%`), and CAGR with dynamic formulas; link `Cash Flow!Net Income` to `'Income Statement'!Net Income`.
+   - Keep audited CF & Equity inputs faithful to the filing, and add **Validation Check** rows: `Balance Check (=Total Assets - Total L&E)`, `Cash Check (=BS Cash - CF Ending Cash)`, `NI Link Check`.
+3. **Controls, Format & Save:** Call `add_data_validation`, `batch_format_workbook(operations=[{"auto_color_financial_model": true, "auto_fit_columns": true, "freeze_panes": "auto"}])`, `save_workbook(file_path="<Company>_Clean_Model.xlsx")` (resolve `sanity_warnings`), and `close_workbook`.
 4. **Live Reconciliation Gate:** Call `audit_workbook_formulas(file_path=...)` (`clean: true`, `external_links_count: 0`), then `excel_live_open` + `excel_live_batch_read_ranges` on all rebuilt totals and check rows. Compare live rebuilt totals against the raw source file's reported totals—fix any row-index typo before sign-off.
 
 ## 4. Accounting (IFRS / FASB), SOX & Formula Guardrails

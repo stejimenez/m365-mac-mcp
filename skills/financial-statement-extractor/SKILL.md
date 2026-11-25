@@ -1,10 +1,10 @@
 ---
 name: financial-statement-extractor
-version: 2.3.1A
-description: "[v2.3.1A] Read-only discovery of raw company Excel files (EN/FR/ES) to map historical years and verbatim accounts into an IFRS/FASB blueprint."
+version: 2.3.1B
+description: "[v2.3.1B] Read-only discovery of raw company Excel files (EN/FR/ES) to map historical years and verbatim accounts into an IFRS/FASB blueprint."
 ---
 
-# Financial Statement Extractor & Account Mapper (IFRS / FASB / SOX) (v2.3.1A)
+# Financial Statement Extractor & Account Mapper (IFRS / FASB / SOX) (v2.3.1B)
 
 ## 1. Trigger & Scope
 - **Triggers (Natural Language — EN / FR / ES):** *"Extract the historical financials from this file"* / *"Extrais les états financiers historiques de ce fichier"* / *"Extrae los estados financieros históricos de este Excel y mapéalos bajo IFRS/GAAP."*
@@ -14,7 +14,7 @@ description: "[v2.3.1A] Read-only discovery of raw company Excel files (EN/FR/ES
 - Source Excel file path — if the user refers to their open workbook, call `excel_live_list_workbooks()` first to resolve the path automatically.
 - Accounting framework (**IFRS** vs. **US GAAP / FASB**): auto-detect from statement labels across EN/FR/ES (*Revenue / Chiffre d'affaires / Ingresos*, *Current / Courant / Corriente*, *Finance Costs / Charges financières / Gastos Financieros*) and state the detected basis; ask only if genuinely ambiguous.
 
-## 3. Exact m365-mac-mcp Tool Sequence
+## 3. Exact Office MCP Tool Sequence
 1. **Low-Token Tab Discovery (Mandatory on Multi-Tab Files):**
    - Call `open_workbook(file_path=...)` and `list_worksheets(workbook_id=...)` (~50 tokens) to locate ONLY the 3 core statements (EN/FR/ES names: *Income Statement / Compte de résultat / Estado de Resultados*, *Balance Sheet / Bilan / Balance General*, *Cash Flow / Flux de trésorerie / Flujo de Efectivo*)—skip Cover, Footnotes, Ratios, Quarterly, and Chart tabs.
 2. **Targeted 1-Call Read (Only the 3 Statement Tabs — Both Values & Sparse Formulas):**

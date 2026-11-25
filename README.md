@@ -2,7 +2,7 @@
 
 *Dual-mode (file-level + live AppleScript) MCP server for Microsoft Excel, Word, and PowerPoint — verified on **macOS 27.x** & **Microsoft Office 16.x** (`m365-mac-mcp`).*
 
-![Release](https://img.shields.io/badge/Release-v2.3.1-blue)
+![Release](https://img.shields.io/badge/Release-v2.4.0-blue)
 ![macOS](https://img.shields.io/badge/macOS-27.x%20(Apple%20Silicon)-000000?logo=apple)
 ![Microsoft Office](https://img.shields.io/badge/Microsoft%20Office%20for%20Mac-16.x-D83B01?logo=microsoftoffice)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
@@ -21,20 +21,20 @@ This server combines **fast file-level manipulation** (`openpyxl`, `python-docx`
 ## Highlights & Architecture
 
 - **Dual-Mode Engine (File-Level + Live App):**
-  - **File-level tools** (`openpyxl`, `python-docx`, `python-pptx`) handle bulk reads/writes, multi-sheet batch formatting, charts, Excel tables, data validation, named styles, formula auditing, and rich `.docx` table/paragraph styling without blocking the UI.
-  - **Live-app tools** (`excel_live_*`, `word_live_*`) drive Microsoft Excel and Microsoft Word directly via serialized, timeout-guarded AppleScript (`osascript -` + `argv`) for real Excel formula evaluation, live edits, custom views, invalid-data circles, and PDF/RTF/TXT export.
-- **Token-Efficient by Design (Zero Loss of Exactitude):**
+  - **File-level tools** (`openpyxl`, `python-docx`, `python-pptx`) handle bulk reads/writes, layout-agnostic multi-table Wall Street formatting, 4-line institutional headers with Smart Magnitude scaling (`$` / `$1,000's` / `$ Millions` / `$ Billions`), charts, Excel tables, data validation, named styles, formula auditing, atomic `os.replace()` saves, and rich `.docx`/`.pptx` generation without blocking the UI.
+  - **Live-app tools** (`excel_live_*`, `word_live_*`) drive Microsoft Excel and Microsoft Word directly via serialized, timeout-guarded AppleScript (`osascript -` + `argv`) for real Excel formula evaluation, formatted `display_values` readback (with automatic `"###"` clipped-cell detection), live edits, custom views, invalid-data circles, and PDF/RTF/TXT export.
+- **Token-Efficient & High-Throughput by Design (Zero Loss of Exactitude):**
   - **Compact JSON wire responses** (`separators=(",", ":")`, `structured_output=False`) cut 2D spreadsheet response payloads by **46%–74%** with zero data loss.
   - **Sparse A1 formula maps** (`{"D2": "=(C2/B2)-1", ...}`) in `inspect_workbook`, `excel_live_read_range`, and `excel_live_batch_read_ranges` eliminate duplicated 2D matrices while making formula coordinates explicit.
-  - **Deduplicated Word reads (`read_document`):** Omits duplicate `full_text` (opt-in via `include_full_text=True`), duplicate `headings`, default `"style": "Normal"`, and empty metadata/tables — cutting Word read tokens by **~40%–50%** with zero data loss.
+  - **Sparse `ws._cells` scanning & deferred working-copy saves:** Layout analysis, formula auditing, and save linting iterate only populated cells (processing 1,048,576-row corporate "ghost" sheets in ~50 ms and <1 MB RAM), while Excel, Word, and PowerPoint defer disk ZIP serialization until explicit save/export.
+  - **Deduplicated Word reads (`read_document`) & 1-call PowerPoint decks (`batch_add_slides`):** Word reads cut tokens by **~40%–50%**, and `batch_add_slides` builds a 6-slide boardroom deck in **3 MCP calls instead of 26 (-88.5% round-trips)**.
   - **Compacted MCP tool schemas** strip Pydantic `"title"`, redundant `"default": null`, and verbose nullable `anyOf` wrappers (**-35%** per-turn schema overhead) while preserving full runtime validation.
-  - **Trimmed trailing blanks & omitted empty boilerplate** keep responses tight without hiding non-empty data or truncation flags.
-- **Live Excel Auto-Sync (`M365_MCP_LIVE_SYNC=auto`):** When `save_workbook` writes to a file already open in Excel with no unsaved edits, it automatically captures the window bounds, active sheet, zoom, scroll position, and selection, reloads the saved file in Excel, and restores your exact view. If you have unsaved manual edits in Excel, it refuses to overwrite so your work is never lost.
-- **Composable Tool Profiles (`M365_MCP_PROFILE`):** Trim the exposed toolset (e.g., `excel,compact`, `excel`, `word`, `word,powerpoint`) to cut schema token overhead by up to 60%+ on local LLMs (LM Studio / Bionic).
-- **Hardened for Modern macOS & Office for Mac:**
-  - Verified on macOS (Apple Silicon) with **Microsoft Excel 16.115** and **Microsoft Word 16.115.1**.
-  - Per-event-loop `asyncio.Lock` serialization around `osascript` calls prevents parallel AppleEvent races.
-  - Automatic quoting of spaced sheet names in formulas (e.g., `=Cash Flow!F15` → `='Cash Flow'!F15`) and pre-write validation prevents Excel modal dialogs and stray `xl/externalLinks`.
+- **Live Excel Auto-Sync (`M365_MCP_LIVE_SYNC=auto`) & Dirty-Save Protection:** When `save_workbook` writes to a file already open in Excel with no unsaved edits, it captures window bounds, active sheet, zoom, scroll position, and selection, reloads the saved file, and restores your exact view. If you have unsaved manual edits in Excel, it refuses to overwrite. Likewise, `excel_live_save` and `word_live_save` refuse to clobber unsaved in-memory edits (`UnsavedInMemoryEditsError`).
+- **Composable Tool Profiles (`M365_MCP_PROFILE`):** Trim the exposed toolset (e.g., `excel,compact`, `excel`, `word`, `word,powerpoint`) to cut schema token overhead by up to 65%+ on local LLMs (LM Studio / Bionic).
+- **Hardened & Modular for Modern macOS & Office for Mac:**
+  - Verified on macOS (Apple Silicon) with **Microsoft Excel 16.115** and **Microsoft Word 16.115.1**, built on clean modular domain mixins (`src/controllers/excel/*` and `src/integrations/applescript/*`) behind stable facades.
+  - Per-event-loop `asyncio.Lock` AppleEvent serialization, per-workbook mutation locks, session-scoped `working_dir` isolation (`ContextVar`), strict write-fence controls (`M365_MCP_BLOCKED_DIRS`, `M365_MCP_RESTRICT_WRITE_TO_PROJECT_DIR`), and unified Away-From-Keyboard (`awaiting_user_action: true`) hard-stop guards.
+  - Automatic quoting of spaced sheet names (`=Cash Flow!F15` → `='Cash Flow'!F15`), universal formula quote sanitization (`'Go'` → `"Go"`), and pre-write validation prevent Excel `-50` errors, modal dialogs, and stray `xl/externalLinks`.
   - Compatible with both **MCP SDK v2** and **MCP SDK v1**, with strict `stderr`-only logging so `stdio` JSON-RPC streams are never polluted.
 
 ---
@@ -42,33 +42,31 @@ This server combines **fast file-level manipulation** (`openpyxl`, `python-docx`
 ## Features
 
 ### Excel (File-Level & Live App)
-- **Workbook & Sheet Management:** Create, open, close, save (`.xlsx`, `.xlsm`, `.csv`, `.pdf`), add/rename/delete/activate worksheets, and one-call `inspect_workbook`.
-- **Bulk & Batch Operations:** Read/write cells and ranges (with `include_formulas` / `evaluate_formulas` aliases), `batch_write_ranges` (including Excel-style `fill_formula` 1D/2D drag-fill translation and shape-aware orientation), `batch_format_workbook`, `excel_live_batch_read_ranges` (with live `calculate`, `#VALUE!`/`#DIV/0!` error surfacing, and unsaved in-memory edit warnings), and `excel_live_batch_write_cells`.
-- **Financial-Model Styling & Formatting:**
-  - `format_range`, `format_worksheet`, `batch_format_workbook`, and `set_column_widths` (explicit widths or auto-fit with padding).
-  - Supports comma-separated multi-ranges (`"B2:F3, B6:F7"`), merged font/alignment/border preservation, per-side borders (`thin`, `medium`, `thick`, `double`, `dashed`, `dotted`, `none`), and `auto_color_financial_model=True` (blue inputs, black same-sheet formulas, green cross-sheet links).
-  - 16 built-in named cell style presets (`Normal`, `Good`, `Bad`, `Neutral`, `Input`, `Calculation`, `Check Cell`, `Linked Cell`, `Note`, `Output`, `Warning Text`, `Title`, `Heading 1`–`Heading 4`, `Total`) via `list_cell_styles` / `apply_cell_style`.
+- **Workbook & Sheet Management:** Create (including `sheet_names=[...]` and optional 4-line institutional `header_metadata`), open, close, atomic save (`.xlsx`, `.xlsm`, `.csv`, `.pdf`), add/rename/delete/activate worksheets, optional `workbook_id` auto-resolution, and one-call `inspect_workbook` (including `detected_tables`).
+- **Bulk & Batch Operations:** Read/write cells and ranges (with `include_formulas` / `evaluate_formulas` aliases), `batch_write_ranges` (including Excel-style `fill_formula` 1D/2D drag-fill translation, dict-shaped `fill_formula`, shape-aware orientation, and universal formula quote sanitization), `batch_format_workbook`, `excel_live_batch_read_ranges` (with live `calculate`, formatted `display_values` + `"###"` clipped-cell detection, `#VALUE!`/`#DIV/0!` error surfacing, and unsaved in-memory edit warnings), and `excel_live_batch_write_cells`.
+- **Layout-Agnostic Financial-Model Styling & Formatting:**
+  - Built-in 2D semantic multi-table analyzer (`src/utils/sheet_layout.py`) automatically detects multiple tables, ERP code/label columns, 2D sensitivity matrices, subheaders, and 2-tier subtotals/totals anywhere on a sheet (never assuming Row 1 / Col A).
+  - `batch_format_workbook`, `format_range`, `format_worksheet`, and `set_column_widths` support workbook-wide `auto_color_financial_model=True` (blue inputs, black same-sheet formulas, green cross-sheet links, Smart Magnitude `$#,##0,` / `$#,##0,,` display scaling synced with Row 4 while keeping exact base currency on `Assumptions` and per-share/per-unit rows), `freeze_panes="auto"`, auto-fit column widths, comma-separated multi-ranges (`"B2:F3, B6:F7"`), and 16 built-in named cell style presets via `list_cell_styles` / `apply_cell_style`.
 - **Tables, Charts & Data Validation:**
-  - Native Excel Tables (`add_excel_table`, `update_excel_table_style`, `excel_live_update_table_style`) with `TableStyleLight*` / `Medium*` / `Dark*` and banded row/column toggles.
-  - Charts (`create_chart`: bar, column, line, pie).
+  - Native Excel Tables (`add_excel_table`, `update_excel_table_style`, `excel_live_update_table_style`) with `TableStyleLight*` / `Medium*` / `Dark*`, banded row/column toggles, and automatic empty-header repair.
+  - Charts (`create_chart`: bar, column, line, pie) with cross-sheet `data_range` support, automatic adjacent header/category detection, solid negative bars (`invertIfNegative=False`), bottom legends, and low X-axis labels.
   - Data validation rules (`add_data_validation`, `list_data_validations`, `clear_data_validations`) plus live invalid-data circles (`excel_live_circle_invalid`).
 - **Formula Auditing & Live Recalculation:**
-  - One-call `audit_workbook_formulas` checks for `#REF!`, `#NAME?`, `#VALUE!`, `#DIV/0!`, `#N/A`, external links, and broken sheet references.
-  - Live Excel reads use bulk single-AppleEvent matrix extraction (10–50× faster and reliable on vertical `N×1` ranges) with live recalculation (`recalculate=True`).
+  - One-call `audit_workbook_formulas` checks per-table block R1C1 consistency, `#REF!`, `#NAME?`, `#VALUE!`, `#DIV/0!`, `#N/A`, `#CIRCULAR!`, `#SYNTAX!` (1-arg `NPV()` / invalid single-quoted strings), external links, broken sheet references, and hardcoded totals; `save_workbook` also runs fast linters for cash-flow sign inversions and 1,000× magnitude jumps.
+  - Live Excel reads use bulk single-AppleEvent matrix extraction (10–50× faster and reliable on vertical `N×1` ranges) with live recalculation (`recalculate=True`), auto-included `display_values` on compact tables, and `"###"` column-clipping warnings.
   - Live Custom Views (`excel_live_custom_views`) and capability inspection (`excel_view_capabilities`).
 
 ### Word (File-Level & Live App)
-- **Document Operations:** Create, open (including legacy `.doc` conversion), close, read paragraphs/tables, set document properties, search & replace, and export to `.docx`, `.pdf`, `.rtf`, or `.txt`.
+- **Document Operations:** Create, open (including legacy `.doc` conversion), close, read paragraphs/tables, set document properties, search & replace, and atomic save/export to `.docx`, `.pdf`, `.rtf`, or `.txt` — with optional `document_id` auto-resolution when 1 document is active and deferred working-copy serialization.
 - **Rich `.docx` Styling:**
   - Full formatting on `add_heading`, `add_paragraph`, `insert_paragraph`, `add_list`, `format_paragraph` (fonts, colors, alignment, line spacing, `keep_with_next`, indents, shading/background, bottom borders).
-  - Full table styling on `add_table`, `format_table`, and `update_table_cell` (column widths in inches with `autofit=False`, header/body styles, alternating row shading, XML borders, cell padding in pt, `repeat_header` / `w:tblHeader`, table & per-column alignment).
-- **Live Word Automation:** List open documents (with multi-tier cascade hardened for Word 16.115.1), open, read, write/append, search & replace, save/export, and close directly in Microsoft Word.
+  - Full table styling on `add_table`, `format_table`, and `update_table_cell` (column widths in inches with automatic pt/twip unit guards, header/body styles, alternating row shading, XML borders, cell padding in pt, `repeat_header` / `w:tblHeader`, table & per-column alignment).
+- **Live Word Automation:** List open documents (hardened for Word 16.115.1), open, read, write/append, search & replace, save/export (with `UnsavedInMemoryEditsError` dirty-edit protection on `word_live_save`), and close directly in Microsoft Word.
 
 ### PowerPoint
-- Create presentations with custom titles and themes
-- Add slides with standard layouts
-- Insert text, images, and speaker notes
-- Save presentations in multiple formats
+- Create **16:9 widescreen** presentations (or load corporate `.pptx`/`.potx` templates) with optional `presentation_id` / `slide_id` auto-resolution
+- **`batch_add_slides`:** Build and populate multi-slide executive decks (layouts, titles, subtitles, auto-cleaned single bullets, speaker notes) in **1 atomic call**
+- Insert individual slides, text, images, and speaker notes with deferred disk serialization and atomic `.pptx` saves
 
 ### Finance Skills *(Work in Progress — EN / FR / ES Natural Language)*
 9 ready-to-use, pure-Markdown (**2.5–4.0 KB** each) **IFRS / FASB / SOX-compliant Finance Skills** live in [`skills/`](skills/) so non-technical finance professionals can run complex workflows in plain English, French, or Spanish:
@@ -105,9 +103,9 @@ This server was developed, benchmarked, and end-to-end verified on the following
 
 | Apple Silicon Tier | Best Local Model (LM Studio / GGUF) | Recommended Profile | Safe Context | Expected Speed & Risk |
 | --- | --- | --- | --- | --- |
-| **16 GB M4** | `Qwen3.5-9B` *(GGUF `Q4_K_M` / MLX 4–6bit)* or `Qwen3-14B` *(4-bit, tight ctx)* | `EXCEL,COMPACT` *(25 tools, ~2.4K tok)* | `12K–16K` *(Q8 KV)* | ~20–32 tok/s; use 2-phase chunking on big builds |
+| **16 GB M4** | `Qwen3.5-9B` *(GGUF `Q4_K_M` / MLX 4–6bit)* or `Qwen3-14B` *(4-bit, tight ctx)* | `EXCEL,COMPACT` *(25 tools, ~2.7K tok)* | `12K–16K` *(Q8 KV)* | ~20–32 tok/s; use 2-phase chunking on big builds |
 | **32 GB M4 / M4 Pro** | `Qwen3.6 35B A3B` *(GGUF `Q4_K_M`)* or `gpt-oss-20b` | `EXCEL,COMPACT` or `EXCEL` | `32K` *(Q8 KV)* | ~20–30+ tok/s; all 9 skills in 1 shot, low risk |
-| **64 GB M4 Pro / Max** | `Qwen3.6 35B A3B — GGUF Q6_K / Q8_0` *(verified reference)* | `EXCEL,COMPACT` or `FULL` *(82 tools)* | `65K–128K` | ~22–32 tok/s (`Q6_K`) / ~18–26 (`Q8_0`); very low risk |
+| **64 GB M4 Pro / Max** | `Qwen3.6 35B A3B — GGUF Q6_K / Q8_0` *(verified reference)* | `EXCEL,COMPACT` or `FULL` *(83 tools)* | `65K–128K` | ~22–32 tok/s (`Q6_K`) / ~18–26 (`Q8_0`); very low risk |
 
 > **Full Hardware, Local Model & `M365_MCP_PROFILE` Decision Guide:** See [**`docs/HARDWARE_AND_PROFILE_GUIDE.md`**](docs/HARDWARE_AND_PROFILE_GUIDE.md).
 
@@ -165,6 +163,7 @@ This server was developed, benchmarked, and end-to-end verified on the following
 | `M365_MCP_PROFILE` | `full` | Comma-separated, case-insensitive tool profile filter (see table below). *(Legacy `OFFICE_MCP_PROFILE` also accepted.)* |
 | `M365_MCP_LIVE_SYNC` | `auto` | `auto` (reloads open saved Excel workbooks with view restore on `save_workbook`) or `off`. *(Legacy `OFFICE_MCP_LIVE_SYNC` also accepted.)* |
 | `M365_MCP_FORMULA_GUARD` | `literals_only` | Protects existing Excel formulas from accidental overwrites: `literals_only` (default), `strict`, or `off`. *(Legacy `OFFICE_MCP_FORMULA_GUARD` also accepted.)* |
+| `M365_MCP_BACKGROUND_MODE` | `no_focus` | Focus-safe background multitasking: `no_focus` (default — never steals OS focus via `open -g -j`, ignores LLM `activate=True`, minimizes newly opened MCP Office windows, and restores your active Excel workbook/Word doc), `strict` (hides newly opened MCP windows), or `off` (legacy foreground behavior). |
 | `M365_MCP_LOG_LEVEL` | `INFO` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`). All logs go to `stderr`. *(Legacy `OFFICE365_MCP_LOG_LEVEL` also accepted.)* |
 | `M365_MCP_APPLESCRIPT_TIMEOUT` | `30.0` | Timeout in seconds for each `osascript` call. *(Legacy `OFFICE365_MCP_APPLESCRIPT_TIMEOUT` also accepted.)* |
 | `M365_MCP_ENABLE_APPLESCRIPT` | `true` | Enable or disable AppleScript bridge (`true`/`false`). *(Legacy `OFFICE365_MCP_ENABLE_APPLESCRIPT` also accepted.)* |
@@ -173,6 +172,8 @@ This server was developed, benchmarked, and end-to-end verified on the following
 | `M365_MCP_PPT_TEMPLATE` | *(unset / blank 16:9)* | Optional default PowerPoint template filename (inside `M365_MCP_TEMPLATES_DIR`) or full path. |
 | `M365_MCP_WORD_TEMPLATE` | *(unset / blank)* | Optional default Word template filename (inside `M365_MCP_TEMPLATES_DIR`) or full path. |
 | `M365_MCP_OUTPUT_DIR` | *(unset / none)* | Optional Priority #3 fallback folder for bare relative filenames when no explicit path (#1) and no active Project Working Folder (#2) is configured. Writes inside the MCP server's own project folder are always blocked. |
+| `M365_MCP_BLOCKED_DIRS` | *(unset / none)* | Optional colon- or semicolon-separated list of directories blocked for all file-writing tools (e.g., `~/Desktop/Private:~/Documents/Archive`). Triggers an immediate `PermissionError` + `HARD STOP`. |
+| `M365_MCP_RESTRICT_WRITE_TO_PROJECT_DIR` | `false` | When `true`, restricts all Office file writes strictly to the active session's Project Working Folder (or `M365_MCP_OUTPUT_DIR`), blocking writes anywhere else. |
 | `M365_MCP_GRANT_ACCESS_TIMEOUT` | `45.0` | Extended AppleScript timeout (clamped `15–55s`, safely under MCP client caps) when opening files *outside* the active Project Working Folder so macOS `Grant Access` prompts have room without hanging unattended runs. |
 | `M365_MCP_DEBUG_LOG` | *(unset / off)* | Optional local JSONL file path to log every MCP tool call, arguments, latency (ms), warnings, and errors for debugging. |
 
@@ -182,18 +183,18 @@ To keep context usage low and tool selection fast on local models (such as LM St
 
 | `M365_MCP_PROFILE` | Tools | Est. Schema Tokens | Best For |
 | --- | --- | --- | --- |
-| `excel,compact` | 25 | ~2.4K | **Recommended** for daily Excel modeling, live recalc & all 8 Excel Finance Skills on local models |
-| `excel` | 50 | ~4.8K | Full Excel toolset (all single-op + batch tools, views, cell styles) |
-| `word` | 26 | ~2.2K | Word-only document creation, styling, and live automation |
-| `powerpoint` | 8 | ~0.5K | PowerPoint-only slide decks |
-| `word,powerpoint` | 33 | ~2.7K | Secondary MCP entry for Word + PowerPoint |
-| `compact` | 38 | ~3.5K | Core Excel + Word tools combined |
-| `excel,word` | 75 | ~7.0K | Full Excel + Word without PowerPoint |
-| `full` *(default)* | 82 | ~7.4K | All Excel, Word, and PowerPoint tools |
+| `excel,compact` | 25 | ~2.7K | **Recommended** for daily Excel modeling, live recalc & all 8 Excel Finance Skills on local models |
+| `excel` | 50 | ~5.1K | Full Excel toolset (all single-op + batch tools, views, cell styles) |
+| `word` | 26 | ~2.3K | Word-only document creation, styling, and live automation |
+| `powerpoint` | 9 | ~0.7K | PowerPoint-only slide decks (including 1-call `batch_add_slides`) |
+| `word,powerpoint` | 34 | ~2.8K | Secondary MCP entry for Word + PowerPoint |
+| `compact` | 39 | ~3.9K | Core Excel + Word + `batch_add_slides` combined |
+| `excel,word` | 75 | ~7.3K | Full Excel + Word without PowerPoint |
+| `full` *(default)* | 83 | ~7.8K | All Excel, Word, and PowerPoint tools |
 
 - Values are **case-insensitive** (`EXCEL,COMPACT`, `Excel,Compact`, `excel,compact`, or `XLS,Compact` are equivalent) and accept any comma-separated combination of `excel` (`xls`/`xlsx`), `word` (`doc`/`docx`), `powerpoint` (`ppt`/`pptx`), and `compact`.
 - Unknown values log a warning to `stderr` and fall back safely to `full`.
-- Call `check_office_status` (or read `m365-mac-mcp://status`) at any time to inspect the active profile, registered tool count, `live_sync_mode`, and `formula_guard_mode`.
+- Call `check_office_status` (or read `m365-mac-mcp://status`) at any time to inspect the active profile, registered tool count, `live_sync_mode`, `formula_guard_mode`, and `background_mode`.
 
 ### Live Excel Auto-Sync (`M365_MCP_LIVE_SYNC`)
 
@@ -211,6 +212,14 @@ Prevents AI models from silently destroying live Excel formulas across all 6 wri
 - **`literals_only` *(default)*:** Atomically blocks **Formula → Hardcoded Literal / Blank (`None` / `""`)** overwrites before modifying any cell and returns `status: "confirmation_required"` with the blocked cells so the model stops and asks for your approval (retrying with `allow_formula_overwrite=true` only if approved). Legitimate **Formula → New Formula** updates are allowed and reported via `"formulas_updated": N`.
 - **`strict`:** Blocks **any** overwrite of an existing formula cell (including Formula → Formula) unless `allow_formula_overwrite=true` — ideal for finalized valuation/board models where only input cells should be edited.
 - **`off`:** Disables the pre-write formula guard.
+
+### Focus-Safe Background Multitasking (`M365_MCP_BACKGROUND_MODE`)
+
+Prevents live Office automation (`excel_live_open`, `excel_live_create`, `word_live_open`, `word_live_create`, PowerPoint opens, and PDF exports) from stealing keyboard focus while you work in other apps — or even while typing inside *another* Microsoft Excel workbook or Word document:
+
+- **`no_focus` *(default)*:** Launches trusted files in the background (`open -g -j`), overrides model-passed `activate=True`, immediately minimizes newly opened MCP Office windows (`collapsed = true`), and restores your previously active Excel workbook or Word document so stray keystrokes never land in an MCP-managed file (while still auto-restoring cleanly if you double-click the file in Finder).
+- **`strict`:** Applies the same focus suppression and hides newly opened MCP Excel windows (`visible = false`, with safe minimize fallback on Word) for maximum same-app isolation.
+- **`off`:** Restores legacy behavior (honors caller's `activate` parameter without window isolation).
 
 ---
 
@@ -233,7 +242,7 @@ Register two entries pointing to the same server `.venv`:
 - **Memory:** `Offload KV Cache to GPU = ON`, `Unified KV Cache = ON`, `Context Checkpoints = 32`, `Keep Model in Memory = ON`, `Try mmap() = ON`, `Speculative Decoding = Off` *(after editing Model Defaults, eject & reload the model or restart Bionic to flush cached KV checkpoints)*
 - **Sampling:** `Top K = 20`, `Top P = 0.95`, `Min P = 0.05`, `Repeat Penalty = 1.0` (`Off` — prevents JSON quote corruption on large 2D arrays), `Presence Penalty = 0.2` (`On` — gently prevents repetitive tool loops without corrupting JSON), `Number of Experts = 8`
 - **Shell Commands (Strongly Recommended in Bionic):** Click the command-approval icon next to `+` in the Bionic chat composer and set **Command approvals → `Off` (*Don't allow shell commands*)**. This enforces zero Python/bash bypasses at the client level, protects your Office files, and keeps local models routed 100% through `m365-mac-mcp`.
-- **System Prompt:** Copy [`Sample Model Config/SYSTEM_PROMPT.md`](Sample%20Model%20Config/SYSTEM_PROMPT.md) (`UNIVERSAL STERLING ENGINE V3.4 — FINANCE & M365 SPECIALIST`) into your client's System Prompt so the agent stays concise, anchors MCP routing (`check_office_status`) cleanly across both wrapper clients (Bionic) and native MCP CLIs, avoids built-in folder/shell bypasses, respects `M365_MCP_FORMULA_GUARD`, and uses your custom Finance `skills/` cleanly.
+- **System Prompt:** Copy [`Sample Model Config/SYSTEM_PROMPT.md`](Sample%20Model%20Config/SYSTEM_PROMPT.md) (`UNIVERSAL STERLING ENGINE V3.5 — FINANCE & M365 SPECIALIST`) into your client's System Prompt so the agent stays concise, anchors MCP routing (`check_office_status`) cleanly across both wrapper clients (Bionic) and native MCP CLIs, avoids built-in folder/shell bypasses, respects `M365_MCP_FORMULA_GUARD`, and uses your custom Finance `skills/` cleanly.
   > **Disclosure:** Applying `Sample Model Config/SYSTEM_PROMPT.md` **highly customizes the model for financial modeling, corporate valuation, Excel/VBA, and Microsoft 365 work only**. If you also use Bionic / LM Studio for general chat or non-finance coding, apply this prompt inside a dedicated Finance Project rather than as your global default.
 
 #### For Claude Desktop
@@ -274,7 +283,7 @@ Edit your Cline MCP settings:
 
 ---
 
-## Tool Reference (82 Tools)
+## Tool Reference (83 Tools)
 
 ### Excel File-Level Tools (30)
 | Category | Tools |
@@ -315,8 +324,8 @@ Edit your Cline MCP settings:
 ### Word Live-App Tools (8)
 `word_live_list_documents`, `word_live_create`, `word_live_open`, `word_live_read`, `word_live_write`, `word_live_replace_text`, `word_live_save`, `word_live_close`
 
-### PowerPoint Tools (7)
-`create_presentation`, `add_slide`, `add_text_to_slide`, `add_image_to_slide`, `add_speaker_notes`, `save_presentation`, `list_active_presentations`
+### PowerPoint Tools (8)
+`create_presentation`, `add_slide`, `batch_add_slides`, `add_text_to_slide`, `add_image_to_slide`, `add_speaker_notes`, `save_presentation`, `list_active_presentations`
 
 ### Utility & MCP Resources (1 Tool + 1 Resource)
 - `check_office_status` — Reports installed Office apps, active profile, registered tool count, and `live_sync_mode`.
@@ -423,11 +432,11 @@ Run the unit and integration test suite with the project virtual environment:
 .venv/bin/pytest tests/test_basic.py tests/test_word_excel_rw.py -v
 ```
 
-This runs **37 tests** covering:
-- Excel file-level read/write, `batch_write_ranges` (`fill_formula` 1D/2D translation, `range`/`sheet`/`values` aliases, shape-aware auto-orientation, single-active-workbook `workbook_id` auto-resolution), batch formatting, named styles, tables, data validation, formula sheet-reference auto-quoting & auditing, `M365_MCP_FORMULA_GUARD` (`literals_only`/`strict`/`off`), and `M365_MCP_LIVE_SYNC` view-restore / unsaved-edits protection.
-- Word file-level creation, rich paragraph/table styling, search & replace, and `.docx` XML attributes (`w:tblHeader`, borders, shading, widths).
-- Composable `M365_MCP_PROFILE` filtering, compact JSON responses, stripped schema noise, sparse A1 formula maps, trimmed blank cells, opt-in `M365_MCP_DEBUG_LOG` wire logging, legacy `OFFICE_MCP_*` / `office365_mcp_server.py` backwards compatibility, and automated validation of all 9 Finance `skills/*/SKILL.md` playbooks.
-- Hardened AppleScript generation and parsing for Excel `16.115` and Word `16.115.1` (including live `calculate`, `#VALUE!`/`#DIV/0!` error surfacing, internal temp-file Grant Access guards, dirty in-memory warnings, and boolean `save_changes` coercion).
+This runs **60 tests** covering:
+- Excel file-level read/write, `header_metadata` 4-line institutional headers & Smart Magnitude scaling, layout-agnostic multi-table semantic analysis (`src/utils/sheet_layout.py`), sparse `ws._cells` 500k+ ghost-sheet scanning, `batch_write_ranges` (`fill_formula` 1D/2D & dict translation, aliases, quote sanitization, single-active-workbook `workbook_id` auto-resolution), batch formatting, named styles, tables, cross-sheet charts, data validation, R1C1 formula auditing & save linters, atomic `os.replace()` saves, `M365_MCP_FORMULA_GUARD` (`literals_only`/`strict`/`off`), and `M365_MCP_LIVE_SYNC` view-restore / unsaved-edits protection.
+- Word & PowerPoint ergonomics parity: optional `document_id` / `presentation_id` auto-resolution, Word deferred working-copy saves, `word_live_save` dirty-edit guard (`UnsavedInMemoryEditsError`), rich `.docx` paragraph/table styling, 16:9 widescreen decks, single-bullet hygiene, and 1-call `batch_add_slides`.
+- Security & session isolation: async session-scoped `working_dir` isolation (`ContextVar`), MCP project-folder write protection, `M365_MCP_BLOCKED_DIRS`, `M365_MCP_RESTRICT_WRITE_TO_PROJECT_DIR`, and all Away-From-Keyboard (`awaiting_user_action: true`) hard-stop guards.
+- Composable `M365_MCP_PROFILE` filtering, compact JSON responses, stripped schema noise, sparse A1 formula maps, live `display_values` + `"###"` detection, opt-in `M365_MCP_DEBUG_LOG` wire logging, modular facade parity, and automated validation of all 9 Finance `skills/*/SKILL.md` playbooks.
 
 ---
 
@@ -456,18 +465,21 @@ This runs **37 tests** covering:
 ```text
 m365-mac-mcp/
 ├── src/
-│   ├── m365_mac_mcp_server.py        # Main MCP server, tool registration & profiles
+│   ├── m365_mac_mcp_server.py        # Main MCP server, tool registration, profiles & session hooks
 │   ├── office365_mcp_server.py       # Backwards-compatible deprecation shim
 │   ├── controllers/
-│   │   ├── excel_controller.py       # File-level Excel (openpyxl) + live auto-sync
-│   │   ├── word_controller.py        # File-level Word (python-docx) + rich styling
-│   │   └── powerpoint_controller.py  # File-level PowerPoint (python-pptx)
+│   │   ├── excel_controller.py       # ExcelController facade composing modular domain mixins
+│   │   ├── excel/                    # Modular Excel mixins (io_lifecycle, reader, writer, charts_tables, formatter, constants)
+│   │   ├── word_controller.py        # File-level Word (python-docx), rich styling & deferred save
+│   │   └── powerpoint_controller.py  # File-level PowerPoint (python-pptx) & batch_add_slides
 │   ├── integrations/
-│   │   └── applescript_bridge.py     # Serialized, hardened macOS AppleScript bridge
+│   │   ├── applescript_bridge.py     # AppleScriptBridge facade composing modular bridge mixins
+│   │   └── applescript/              # Modular AppleScript mixins (base, word_bridge, excel_core, excel_io, ppt_bridge)
 │   └── utils/
 │       ├── config.py                 # Env & JSON configuration
 │       ├── logger.py                 # stderr-only structured logging
-│       └── validators.py             # Input & path validation
+│       ├── sheet_layout.py           # 2D semantic multi-table layout & Smart Magnitude analyzer
+│       └── validators.py             # Session-scoped path resolution, write fences & atomic saves
 ├── tests/
 │   ├── test_basic.py
 │   └── test_word_excel_rw.py
@@ -475,7 +487,7 @@ m365-mac-mcp/
 │   ├── EXECUTIVE_COMPARISON_MATRIX.md          # Standalone 16GB/32GB/64GB M4 comparison matrix
 │   └── HARDWARE_AND_PROFILE_GUIDE.md           # 16GB/32GB/64GB M4 model & M365_MCP_PROFILE guide
 ├── Model-MCP Stress Test/
-│   └── STRESS_TEST_SUITE.md                    # 9-Phase / 12-Chat model-agnostic stress-test suite (all 82 tools)
+│   └── STRESS_TEST_SUITE.md                    # 9-Phase / 12-Chat model-agnostic stress-test suite (all 83 tools)
 ├── Sample Model Config/
 │   ├── SYSTEM_PROMPT.md                        # Recommended Qwen3.6 Finance & M365 system prompt
 │   ├── SYSTEM_PROMPT_GEMMA4_26B_A4B.md         # Dedicated Gemma 4 26B A4B system prompt

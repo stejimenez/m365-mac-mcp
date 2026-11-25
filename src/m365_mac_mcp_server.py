@@ -37,10 +37,15 @@ from integrations.applescript_bridge import AppleScriptBridge
 from utils.config import Config
 from utils.logger import setup_logger
 from utils.validators import (
+    get_background_mode,
+    get_blocked_write_dirs,
     get_client_project_dir,
     get_default_output_dir,
+    is_write_restricted_to_project_dir,
+    reset_current_session_id,
     sanitize_for_json,
     set_client_project_dir,
+    set_current_session_id,
 )
 
 logger = setup_logger(__name__)
@@ -123,7 +128,64 @@ _ACTIVE_PROFILE_LABEL, _PROFILE_APPS, _PROFILE_COMPACT = _parse_mcp_profile(
 )
 _REGISTERED_TOOL_NAMES: List[str] = []
 
-mcp = _ServerClass(
+async def _sync_client_roots_from_context(ctx: Any) -> None:
+    """Best-effort sync of MCP client workspace root (e.g. Bionic/VS Code/Cline Project Folder) via roots/list."""
+    try:
+        session = getattr(ctx, "session", None)
+        if session is None:
+            return
+        caps = getattr(session, "client_capabilities", None)
+        if caps is None or getattr(caps, "roots", None) is None:
+            return
+        import asyncio
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            roots_result = await asyncio.wait_for(session.list_roots(), timeout=1.5)
+        roots = getattr(roots_result, "roots", None) or []
+        for root in roots:
+            uri = str(getattr(root, "uri", "") or "")
+            if uri.startswith("file://"):
+                if set_client_project_dir(uri) is not None:
+                    return
+    except Exception:
+        pass
+
+
+class _M365MCPServer(_ServerClass):  # type: ignore[misc,valid-type]
+    """MCPServer subclass so MCP SDK v2 binds our session-isolation & roots/list hook during __init__."""
+
+    @staticmethod
+    def _extract_session_key(ctx: Any) -> Optional[str]:
+        """Return a stable per-connection session key across MCP SDK v1 and v2.
+
+        In MCP SDK v2, ``ctx.session`` is a per-request ``ServerSession`` wrapper around
+        a persistent ``_connection`` object; keying on ``id(_connection)`` preserves
+        ``working_dir`` / ``roots/list`` across tool calls on the same connection while
+        still isolating concurrent client connections.
+        """
+        session = getattr(ctx, "session", None)
+        if session is None:
+            return None
+        conn = getattr(session, "_connection", None)
+        target = conn if conn is not None else session
+        return f"mcp_session_{id(target)}"
+
+    async def _handle_call_tool(self, ctx: Any, params: Any) -> Any:
+        sess_key = self._extract_session_key(ctx)
+        tok = set_current_session_id(sess_key) if sess_key is not None else None
+        try:
+            tool_name = getattr(params, "name", "")
+            tool_args = getattr(params, "arguments", None) or {}
+            if (tool_name == "check_office_status" and not tool_args.get("working_dir")) or get_client_project_dir() is None:
+                await _sync_client_roots_from_context(ctx)
+            return await super()._handle_call_tool(ctx, params)
+        finally:
+            if tok is not None:
+                reset_current_session_id(tok)
+
+
+mcp = _M365MCPServer(
     "m365-mac-mcp",
     instructions=(
         "m365-mac-mcp (Excel, Word, PowerPoint on macOS). "
@@ -266,14 +328,32 @@ def _error_response(action: str, exc: Exception) -> Dict[str, Any]:
     hint: Optional[str] = None
 
     awaiting_user_action = False
+    registered = set(_REGISTERED_TOOL_NAMES)
     if isinstance(exc, PermissionError) and "mcp server project folder" in msg.lower():
         hint = "Provide an explicit user output path outside the MCP server project folder (e.g., '~/Desktop/Model.xlsx' or '~/Documents/Report.docx')."
-    elif isinstance(exc, PermissionError) or "-1743" in msg:
+    elif isinstance(exc, PermissionError) and (
+        "m365_mcp_blocked_dirs" in msg.lower()
+        or "m365_mcp_restrict_write_to_project_dir" in msg.lower()
+    ):
+        awaiting_user_action = True
+        hint = (
+            "HARD STOP IMMEDIATELY: write destination is blocked by server write-fence configuration "
+            "(M365_MCP_BLOCKED_DIRS or M365_MCP_RESTRICT_WRITE_TO_PROJECT_DIR). "
+            "Do NOT retry or silently save elsewhere; ask the user for an allowed output folder."
+        )
+    elif "-1743" in msg or "not authorized to send apple events" in msg.lower():
         awaiting_user_action = True
         hint = (
             "HARD STOP IMMEDIATELY: macOS denied Automation permission (-1743). "
             "Do NOT fall back to uncached file-level reads for formulas or run downstream steps. "
             "Ask the user to enable permission in System Settings > Privacy & Security > Automation for Microsoft Office and reply 'continue'."
+        )
+    elif isinstance(exc, PermissionError):
+        awaiting_user_action = True
+        hint = (
+            "HARD STOP IMMEDIATELY: macOS denied filesystem access to this file or folder (e.g., Desktop/Documents "
+            "permission revoked in System Settings > Privacy & Security > Files & Folders, or file is read-only). "
+            "Do NOT retry or save alternate copies silently; tell the user which path was blocked and ask for an allowed folder."
         )
     elif isinstance(exc, TimeoutError):
         awaiting_user_action = True
@@ -301,15 +381,29 @@ def _error_response(action: str, exc: Exception) -> Dict[str, Any]:
     elif isinstance(exc, ValueError):
         low = msg.lower()
         if "workbook" in low and "not found" in low:
-            hint = "Call list_active_workbooks or create_workbook/open_workbook to obtain a valid workbook_id."
+            if "list_active_workbooks" in registered:
+                hint = "Call list_active_workbooks or create_workbook/open_workbook to obtain a valid workbook_id."
+            else:
+                hint = "Call create_workbook or open_workbook to obtain a valid workbook_id (or omit workbook_id when 1 workbook is active)."
         elif "document" in low and "not found" in low:
-            hint = "Call list_active_documents or create_document/open_document to obtain a valid document_id."
+            if "list_active_documents" in registered:
+                hint = "Call list_active_documents or create_document/open_document to obtain a valid document_id (or omit document_id when 1 document is active)."
+            else:
+                hint = "Call create_document or open_document to obtain a valid document_id (or omit document_id when 1 document is active)."
+        elif "presentation" in low and "not found" in low:
+            if "list_active_presentations" in registered:
+                hint = "Call list_active_presentations or create_presentation to obtain a valid presentation_id (or omit presentation_id when 1 presentation is active)."
+            else:
+                hint = "Call create_presentation to obtain a valid presentation_id (or omit presentation_id when 1 presentation is active)."
         elif "worksheet" in low and "not found" in low:
             hint = "Call list_worksheets to verify exact sheet names (including spaces/capitalization)."
         elif "range" in low or "cell reference" in low:
             hint = "Use A1-style references like 'A1' or 'A1:G10'."
     elif isinstance(exc, IndexError):
-        hint = "Use read_document or read_tables to check valid 0-based indices before updating."
+        if "read_document" in registered:
+            hint = "Use read_document or read_tables to check valid 0-based indices before updating."
+        else:
+            hint = "Verify valid 0-based index bounds before retrying."
 
     payload: Dict[str, Any] = {
         "status": "error",
@@ -358,13 +452,15 @@ async def open_document(file_path: str) -> Dict[str, Any]:
 
 @_tool(app="word")
 async def read_document(
-    document_id: str,
+    document_id: Optional[str] = None,
     include_tables: bool = True,
     include_styles: bool = False,
     include_metadata: bool = True,
     include_full_text: bool = False,
+    max_paragraphs: int = 200,
+    start_paragraph: int = 0,
 ) -> Dict[str, Any]:
-    """Read indexed paragraphs (with non-Normal styles), tables, and metadata from a Word document."""
+    """Read indexed paragraphs (with non-Normal styles), tables, and metadata from a Word document (paginated via max_paragraphs/start_paragraph). document_id auto-resolves if 1 document is active."""
     try:
         return await word.read_document(
             document_id=document_id,
@@ -372,6 +468,8 @@ async def read_document(
             include_styles=include_styles,
             include_metadata=include_metadata,
             include_full_text=include_full_text,
+            max_paragraphs=max_paragraphs,
+            start_paragraph=start_paragraph,
         )
     except Exception as exc:
         return _error_response("read_document", exc)
@@ -379,13 +477,13 @@ async def read_document(
 
 @_tool(app="word")
 async def add_heading(
-    document_id: str,
-    text: str,
+    document_id: Optional[str] = None,
+    text: str = "",
     level: int = 1,
     style: Optional[str] = None,
     formatting: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Append a heading (level 0-9) to a Word document with optional explicit formatting."""
+    """Append a heading (level 0-9) to a Word document with optional explicit formatting. document_id auto-resolves if 1 document is active."""
     try:
         return await word.add_heading(
             document_id=document_id,
@@ -400,15 +498,15 @@ async def add_heading(
 
 @_tool(app="word", compact=False)
 async def format_paragraph(
-    document_id: str,
-    index: int,
-    formatting: Dict[str, Any],
+    document_id: Optional[str] = None,
+    index: int = 0,
+    formatting: Optional[Dict[str, Any]] = None,
     style: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Apply explicit style and formatting to an existing Word paragraph by 0-based index."""
     try:
         return await word.format_paragraph(
-            document_id=document_id, index=index, formatting=formatting, style=style
+            document_id=document_id, index=index, formatting=formatting or {}, style=style
         )
     except Exception as exc:
         return _error_response("format_paragraph", exc)
@@ -416,12 +514,12 @@ async def format_paragraph(
 
 @_tool(app="word")
 async def add_paragraph(
-    document_id: str,
-    text: str,
+    document_id: Optional[str] = None,
+    text: str = "",
     style: Optional[str] = None,
     formatting: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Append a paragraph to a Word document with optional style and formatting."""
+    """Append a paragraph to a Word document with optional style and formatting. document_id auto-resolves if 1 document is active."""
     try:
         return await word.add_paragraph(
             document_id=document_id,
@@ -435,9 +533,9 @@ async def add_paragraph(
 
 @_tool(app="word", compact=False)
 async def insert_paragraph(
-    document_id: str,
-    index: int,
-    text: str,
+    document_id: Optional[str] = None,
+    index: int = 0,
+    text: str = "",
     style: Optional[str] = None,
     formatting: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -456,9 +554,9 @@ async def insert_paragraph(
 
 @_tool(app="word", compact=False)
 async def replace_document_text(
-    document_id: str,
-    find_text: str,
-    replace_text: str,
+    document_id: Optional[str] = None,
+    find_text: str = "",
+    replace_text: str = "",
     match_case: bool = True,
     include_tables: bool = True,
 ) -> Dict[str, Any]:
@@ -476,7 +574,7 @@ async def replace_document_text(
 
 
 @_tool(app="word", compact=False)
-async def delete_paragraph(document_id: str, index: int) -> Dict[str, Any]:
+async def delete_paragraph(document_id: Optional[str] = None, index: int = 0) -> Dict[str, Any]:
     """Delete a paragraph by its 0-based index from a Word document."""
     try:
         return await word.delete_paragraph(document_id=document_id, index=index)
@@ -486,8 +584,8 @@ async def delete_paragraph(document_id: str, index: int) -> Dict[str, Any]:
 
 @_tool(app="word", compact=False)
 async def add_list(
-    document_id: str,
-    items: List[str],
+    document_id: Optional[str] = None,
+    items: Optional[List[str]] = None,
     list_type: str = "bullet",
     style: Optional[str] = None,
     formatting: Optional[Dict[str, Any]] = None,
@@ -496,7 +594,7 @@ async def add_list(
     try:
         return await word.add_list(
             document_id=document_id,
-            items=items,
+            items=items or [],
             list_type=list_type,
             style=style,
             formatting=formatting,
@@ -507,9 +605,9 @@ async def add_list(
 
 @_tool(app="word")
 async def add_table(
-    document_id: str,
-    rows: int,
-    columns: int,
+    document_id: Optional[str] = None,
+    rows: int = 0,
+    columns: int = 0,
     data: Optional[List[List[Any]]] = None,
     style: Optional[str] = None,
     column_widths: Optional[List[float]] = None,
@@ -522,8 +620,16 @@ async def add_table(
     table_alignment: Optional[str] = None,
     column_alignments: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """Add a styled table to a Word document and optionally populate cells in one call."""
+    """WORD DOCUMENTS ONLY (not PowerPoint — use add_text_to_slide or batch_add_slides for slides). Add a styled table to a Word document and populate cells in one call. document_id auto-resolves if 1 Word document is active."""
     try:
+        if document_id and (
+            document_id in powerpoint.active_presentations
+            or any(document_id in p.get("slides", {}) for p in powerpoint.active_presentations.values())
+        ):
+            raise ValueError(
+                "add_table is for Microsoft Word documents only — not PowerPoint presentations or slides. "
+                "Use add_text_to_slide or batch_add_slides for PowerPoint content."
+            )
         return await word.add_table(
             document_id=document_id,
             rows=rows,
@@ -546,8 +652,8 @@ async def add_table(
 
 @_tool(app="word", compact=False)
 async def format_table(
-    document_id: str,
-    table_index: int,
+    document_id: Optional[str] = None,
+    table_index: int = 0,
     style: Optional[str] = None,
     column_widths: Optional[List[float]] = None,
     header_formatting: Optional[Dict[str, Any]] = None,
@@ -581,11 +687,11 @@ async def format_table(
 
 @_tool(app="word", compact=False)
 async def update_table_cell(
-    document_id: str,
-    table_index: int,
-    row: int,
-    column: int,
-    text: str,
+    document_id: Optional[str] = None,
+    table_index: int = 0,
+    row: int = 0,
+    column: int = 0,
+    text: str = "",
     formatting: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Update a single cell (and optional formatting) in an existing Word table (0-based indices)."""
@@ -604,7 +710,7 @@ async def update_table_cell(
 
 @_tool(app="word", compact=False)
 async def set_document_properties(
-    document_id: str,
+    document_id: Optional[str] = None,
     title: Optional[str] = None,
     author: Optional[str] = None,
     subject: Optional[str] = None,
@@ -625,11 +731,11 @@ async def set_document_properties(
 
 @_tool(app="word")
 async def save_document(
-    document_id: str,
+    document_id: Optional[str] = None,
     file_path: Optional[str] = None,
     format: str = "docx",
 ) -> Dict[str, Any]:
-    """Save a Word document in-place or to a new path (.docx, .pdf, .rtf, .txt, .doc)."""
+    """Save a Word document in-place or to a new path (.docx, .pdf, .rtf, .txt, .doc). document_id auto-resolves if 1 document is active."""
     try:
         return await word.save_document(
             document_id=document_id, file_path=file_path, format=format
@@ -640,10 +746,10 @@ async def save_document(
 
 @_tool(app="word")
 async def close_document(
-    document_id: str,
+    document_id: Optional[str] = None,
     save_before_close: bool = False,
 ) -> Dict[str, Any]:
-    """Close an in-memory Word document and clean up temporary files."""
+    """Close an in-memory Word document and clean up temporary files. document_id auto-resolves if 1 document is active."""
     try:
         return await word.close_document(
             document_id=document_id, save_before_close=save_before_close
@@ -722,11 +828,18 @@ async def word_live_create(
 async def word_live_read(
     document_name: Optional[str] = None,
     include_tables: bool = True,
+    include_full_text: bool = False,
+    max_paragraphs: int = 200,
+    start_paragraph: int = 0,
 ) -> Dict[str, Any]:
-    """Read text, paragraphs, selection/cursor state, and tables from a live Word document."""
+    """Read paragraphs, selection/cursor state, and tables from a live Word document (paginated via max_paragraphs/start_paragraph; pass include_full_text=True only if raw joined text is needed)."""
     try:
         return await applescript.read_live_word_document(
-            document_name=document_name, include_tables=include_tables
+            document_name=document_name,
+            include_tables=include_tables,
+            include_full_text=include_full_text,
+            max_paragraphs=max_paragraphs,
+            start_paragraph=start_paragraph,
         )
     except Exception as exc:
         return _error_response("word_live_read", exc)
@@ -770,6 +883,36 @@ async def word_live_replace_text(
         return _error_response("word_live_replace_text", exc)
 
 
+def _find_dirty_in_memory_document(
+    document_name: Optional[str] = None,
+    file_path: Optional[str] = None,
+) -> Optional[str]:
+    """Return the document_id of a matching active in-memory Word document with unsaved edits."""
+    targets: set[str] = set()
+    if document_name and str(document_name).strip():
+        targets.add(Path(str(document_name).strip()).name.lower())
+    if file_path and str(file_path).strip():
+        targets.add(Path(str(file_path).strip()).expanduser().name.lower())
+
+    dirty_ids: List[str] = []
+    for doc_id, entry in word.active_documents.items():
+        if not entry.get("dirty"):
+            continue
+        dirty_ids.append(doc_id)
+        if targets:
+            meta = entry.get("metadata") or {}
+            candidates = {
+                Path(str(entry.get("working_path") or "")).name.lower(),
+                Path(str(meta.get("file_path") or "")).name.lower(),
+                Path(str(meta.get("source_path") or "")).name.lower(),
+            }
+            if targets & candidates:
+                return doc_id
+    if not targets and len(dirty_ids) == 1:
+        return dirty_ids[0]
+    return None
+
+
 @_tool(app="word")
 async def word_live_save(
     document_name: Optional[str] = None,
@@ -778,6 +921,19 @@ async def word_live_save(
 ) -> Dict[str, Any]:
     """Save a live Word document in-place or Save As (.docx, .pdf, .rtf, .txt, .doc)."""
     try:
+        dirty_doc_id = _find_dirty_in_memory_document(document_name=document_name, file_path=file_path)
+        if dirty_doc_id:
+            return {
+                "status": "error",
+                "action": "word_live_save",
+                "error_type": "UnsavedInMemoryEditsError",
+                "error": (
+                    f"In-memory Word document '{dirty_doc_id}' has unsaved file-level edits "
+                    "(from add_heading/add_paragraph/add_table/replace_document_text). "
+                    "Calling word_live_save would save Word's stale copy over disk and lose those edits."
+                ),
+                "hint": f"Call save_document(document_id='{dirty_doc_id}', file_path=...) instead to persist your file-level edits first.",
+            }
         return await applescript.save_word_document(
             document_name=document_name,
             file_path=file_path,
@@ -821,8 +977,9 @@ async def create_workbook(
     sheet_names: Optional[List[str]] = None,
     include_title_header: bool = False,
     open_in_excel: bool = False,
+    header_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Create a new Excel workbook (.xlsx). Pass sheet_names=['IS','BS','CF'] to create multiple tabs in one call. Parent directories are auto-created on save_workbook."""
+    """Create a new Excel workbook (.xlsx). Pass sheet_names=['IS','BS','CF'] to create multiple tabs in one call. Optional header_metadata={'entity':'Company/Project','period':'Years 0-6','currency':'USD','magnitude':'auto'} auto-writes a 4-line institutional header block (Rows 1-4; tables start at Row 6) with Smart Magnitude scaling ($/$1,000's/$M/$B)."""
     try:
         return await excel.create_workbook(
             title=title,
@@ -831,6 +988,7 @@ async def create_workbook(
             sheet_names=sheet_names,
             include_title_header=include_title_header,
             open_in_excel=open_in_excel,
+            header_metadata=header_metadata,
         )
     except Exception as exc:
         return _error_response("create_workbook", exc)
@@ -875,14 +1033,14 @@ async def add_worksheet(
 
 @_tool(app="excel", compact=False)
 async def rename_worksheet(
-    workbook_id: str,
-    old_name: str,
-    new_name: str,
+    workbook_id: Optional[str] = None,
+    old_name: str = "",
+    new_name: str = "",
 ) -> Dict[str, Any]:
-    """Rename an existing worksheet in an open workbook."""
+    """Rename an existing worksheet in an open workbook. workbook_id auto-resolves if 1 workbook is active."""
     try:
         return await excel.rename_worksheet(
-            workbook_id=workbook_id, old_name=old_name, new_name=new_name
+            workbook_id=excel._resolve_workbook_id(workbook_id), old_name=old_name, new_name=new_name
         )
     except Exception as exc:
         return _error_response("rename_worksheet", exc)
@@ -904,11 +1062,14 @@ async def delete_worksheet(
 
 
 @_tool(app="excel", compact=False)
-async def set_active_worksheet(workbook_id: str, sheet_name: str) -> Dict[str, Any]:
-    """Set the active worksheet of an open workbook."""
+async def set_active_worksheet(
+    workbook_id: Optional[str] = None,
+    sheet_name: str = "",
+) -> Dict[str, Any]:
+    """Set the active worksheet of an open workbook. workbook_id auto-resolves if 1 workbook is active."""
     try:
         return await excel.set_active_worksheet(
-            workbook_id=workbook_id, sheet_name=sheet_name
+            workbook_id=excel._resolve_workbook_id(workbook_id), sheet_name=sheet_name
         )
     except Exception as exc:
         return _error_response("set_active_worksheet", exc)
@@ -916,15 +1077,15 @@ async def set_active_worksheet(workbook_id: str, sheet_name: str) -> Dict[str, A
 
 @_tool(app="excel", compact=False)
 async def read_cell(
-    workbook_id: str,
-    cell: str,
+    workbook_id: Optional[str] = None,
+    cell: str = "",
     sheet_name: Optional[str] = None,
     include_evaluated: bool = True,
 ) -> Dict[str, Any]:
-    """Read a single cell's value, formula, cached evaluated value, and number format."""
+    """Read a single cell's value, formula, cached evaluated value, and number format. workbook_id auto-resolves if 1 workbook is active."""
     try:
         return await excel.read_cell(
-            workbook_id=workbook_id,
+            workbook_id=excel._resolve_workbook_id(workbook_id),
             sheet_name=sheet_name,
             cell=cell,
             include_evaluated=include_evaluated,
@@ -942,10 +1103,10 @@ async def read_range(
     range: Optional[str] = None,
     evaluate_formulas: bool = False,
     include_formulas: Optional[bool] = None,
-    max_rows: int = 500,
-    max_cols: int = 50,
+    max_rows: int = 150,
+    max_cols: int = 30,
 ) -> Dict[str, Any]:
-    """Read a cell range (or entire used range) as a JSON-safe 2D matrix. Accepts cell_range, range_ref, or range; workbook_id auto-resolves if 1 workbook is active."""
+    """Read a cell range (or used range) as a JSON-safe 2D matrix (default cap 150x30 to protect context). Accepts cell_range, range_ref, or range; workbook_id auto-resolves if 1 workbook is active."""
     try:
         effective_range = (
             cell_range
@@ -967,13 +1128,16 @@ async def read_range(
 
 @_tool(app="excel", compact=False)
 async def read_tables(
-    workbook_id: str,
+    workbook_id: Optional[str] = None,
     sheet_name: Optional[str] = None,
+    max_rows_per_table: int = 100,
 ) -> Dict[str, Any]:
-    """Read all structured Excel Tables (names, ranges, headers, rows) from a sheet or workbook."""
+    """Read structured Excel Tables (names, ranges, headers, up to max_rows_per_table rows) from a sheet or workbook. workbook_id auto-resolves if 1 workbook is active."""
     try:
         return await excel.read_tables(
-            workbook_id=workbook_id, sheet_name=sheet_name
+            workbook_id=excel._resolve_workbook_id(workbook_id),
+            sheet_name=sheet_name,
+            max_rows_per_table=max_rows_per_table,
         )
     except Exception as exc:
         return _error_response("read_tables", exc)
@@ -1046,22 +1210,22 @@ async def write_cell(
 
 @_tool(app="excel", compact=False)
 async def write_range(
-    workbook_id: str,
-    sheet_name: Optional[str],
-    start_cell: str,
-    data: List[List[Any]],
+    workbook_id: Optional[str] = None,
+    sheet_name: Optional[str] = None,
+    start_cell: str = "A1",
+    data: Optional[List[List[Any]]] = None,
     formatting: Optional[Dict[str, Any]] = None,
     header_formatting: Optional[Dict[str, Any]] = None,
     number_format: Optional[str] = None,
     allow_formula_overwrite: bool = False,
 ) -> Dict[str, Any]:
-    """Write a 2D array/matrix of typed values starting at start_cell."""
+    """Write a 2D array/matrix of typed values starting at start_cell. workbook_id auto-resolves if 1 workbook is active."""
     try:
         return await excel.write_range(
-            workbook_id=workbook_id,
+            workbook_id=excel._resolve_workbook_id(workbook_id),
             sheet_name=sheet_name,
             start_cell=start_cell,
-            data=data,
+            data=data or [],
             formatting=formatting,
             header_formatting=header_formatting,
             number_format=number_format,
@@ -1073,21 +1237,18 @@ async def write_range(
 
 @_tool(app="excel", compact=False)
 async def add_formula(
-    workbook_id: str,
-    sheet_name: Optional[str],
-    cell: str,
-    formula: str,
+    workbook_id: Optional[str] = None,
+    sheet_name: Optional[str] = None,
+    cell: str = "",
+    formula: str = "",
     number_format: Optional[str] = None,
     formatting: Optional[Dict[str, Any]] = None,
     allow_formula_overwrite: bool = False,
 ) -> Dict[str, Any]:
-    """Write an Excel formula to a cell (e.g. '=SUM(B2:E2)' or "='Balance Sheet'!B2").
-
-    Automatically quotes same-workbook sheet names containing spaces so no external links are created.
-    """
+    """Write an Excel formula to a cell (e.g. '=SUM(B2:E2)' or "='Balance Sheet'!B2"). workbook_id auto-resolves if 1 workbook is active."""
     try:
         return await excel.add_formula(
-            workbook_id=workbook_id,
+            workbook_id=excel._resolve_workbook_id(workbook_id),
             sheet_name=sheet_name,
             cell=cell,
             formula=formula,
@@ -1101,7 +1262,7 @@ async def add_formula(
 
 @_tool(app="excel", compact=False)
 async def set_column_widths(
-    workbook_id: str,
+    workbook_id: Optional[str] = None,
     sheet_name: Optional[str] = None,
     widths: Optional[Dict[str, float]] = None,
     auto_fit: bool = False,
@@ -1109,10 +1270,10 @@ async def set_column_widths(
     max_width: float = 60.0,
     padding: float = 4.0,
 ) -> Dict[str, Any]:
-    """Set explicit Excel column widths (e.g. {'A': 42, 'B:G': 15}) and/or auto-fit columns."""
+    """Set explicit Excel column widths (e.g. {'A': 42, 'B:G': 15}) and/or auto-fit columns. workbook_id auto-resolves if 1 workbook is active."""
     try:
         return await excel.set_column_widths(
-            workbook_id=workbook_id,
+            workbook_id=excel._resolve_workbook_id(workbook_id),
             sheet_name=sheet_name,
             widths=widths,
             auto_fit=auto_fit,
@@ -1126,20 +1287,20 @@ async def set_column_widths(
 
 @_tool(app="excel", compact=False)
 async def format_range(
-    workbook_id: str,
-    sheet_name: Optional[str],
+    workbook_id: Optional[str] = None,
+    sheet_name: Optional[str] = None,
     cell_range: Optional[str] = None,
     range_ref: Optional[str] = None,
     formatting: Optional[Dict[str, Any]] = None,
     number_format: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Style an Excel cell/range ('A1:G1', '1:1', 'B:G'). formatting keys: bold, italic, font_size, font_name, font_color ('#RRGGBB'), bg_color ('#RRGGBB'), horizontal, vertical, wrap_text, border ({top,bottom,left,right,color}), cell_style."""
+    """Style an Excel cell/range ('A1:G1', '1:1', 'B:G'). workbook_id auto-resolves if 1 workbook is active."""
     try:
         effective_range = cell_range if cell_range is not None else range_ref
         if not effective_range:
             raise ValueError("Provide cell_range or range_ref (e.g. 'A1:G1')")
         return await excel.format_range(
-            workbook_id=workbook_id,
+            workbook_id=excel._resolve_workbook_id(workbook_id),
             sheet_name=sheet_name,
             cell_range=effective_range,
             formatting=formatting,
@@ -1151,7 +1312,7 @@ async def format_range(
 
 @_tool(app="excel", compact=False)
 async def format_worksheet(
-    workbook_id: str,
+    workbook_id: Optional[str] = None,
     sheet_name: Optional[str] = None,
     column_widths: Optional[Dict[str, float]] = None,
     row_heights: Optional[Dict[str, float]] = None,
@@ -1165,10 +1326,10 @@ async def format_worksheet(
     show_gridlines: Optional[bool] = None,
     auto_color_financial_model: bool = False,
 ) -> Dict[str, Any]:
-    """Batch-format one worksheet in one call. Supports comma-separated ranges ('G2:G4, G6:G9') and auto_color_financial_model=True (blue inputs, black formulas, green cross-sheet links). styles=[{'range':'A1:G1','number_format':'$#,##0','formatting':{'bold':True,'font_color':'#FFFFFF','bg_color':'#1F4E79','border':{'top':'thin','bottom':'double'}}}] (flat keys also accepted)."""
+    """Batch-format one worksheet in one call. workbook_id auto-resolves if 1 workbook is active. Supports comma-separated ranges and auto_color_financial_model=True."""
     try:
         return await excel.format_worksheet(
-            workbook_id=workbook_id,
+            workbook_id=excel._resolve_workbook_id(workbook_id),
             sheet_name=sheet_name,
             column_widths=column_widths,
             row_heights=row_heights,
@@ -1210,7 +1371,7 @@ async def batch_format_workbook(
     workbook_id: Optional[str] = None,
     operations: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """Batch-format multiple worksheets in one call. workbook_id auto-resolves if 1 workbook is active. Supports comma-separated ranges ('B2:F3, B6:F7') and 'auto_color_financial_model': True (blue inputs, black formulas, green cross-sheet links). operations=[{'sheet_name':'...','column_widths':{'A':40,'B:G':15},'freeze_panes':'B2','auto_color_financial_model':True,'styles':[{'range':'A1:G1','number_format':'$#,##0','formatting':{'bold':True,'font_color':'#FFFFFF','bg_color':'#1F4E79','border':{'top':'thin','bottom':'double'}}}]}] (flat keys also accepted)."""
+    """Batch-format worksheets in one call. workbook_id auto-resolves if 1 workbook is active. One-shot workbook polish: operations=[{'auto_color_financial_model':True,'auto_fit_columns':True,'freeze_panes':'auto'}] (omitting sheet_name applies workbook-wide flags to ALL tabs, auto-detects multi-table headers/totals on ANY row/col, applies Smart Magnitude, and freezes below each table's header). For range rules, ALWAYS include explicit 'sheet_name'."""
     try:
         return await excel.batch_format_workbook(
             workbook_id=workbook_id, operations=operations
@@ -1220,30 +1381,27 @@ async def batch_format_workbook(
 
 
 @_tool(app="excel", compact=False)
-async def list_cell_styles(workbook_id: str) -> Dict[str, Any]:
-    """List available Excel named cell styles and built-in financial model presets."""
+async def list_cell_styles(workbook_id: Optional[str] = None) -> Dict[str, Any]:
+    """List available Excel named cell styles and built-in financial model presets. workbook_id auto-resolves if 1 workbook is active."""
     try:
-        return await excel.list_cell_styles(workbook_id=workbook_id)
+        return await excel.list_cell_styles(workbook_id=excel._resolve_workbook_id(workbook_id))
     except Exception as exc:
         return _error_response("list_cell_styles", exc)
 
 
 @_tool(app="excel", compact=False)
 async def apply_cell_style(
-    workbook_id: str,
-    sheet_name: Optional[str],
-    cell_range: str,
-    style_name: str,
+    workbook_id: Optional[str] = None,
+    sheet_name: Optional[str] = None,
+    cell_range: str = "",
+    style_name: str = "",
     overrides: Optional[Dict[str, Any]] = None,
     number_format: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Apply a named Excel cell style (e.g. 'Good', 'Bad', 'Input', 'Calculation', 'Total', 'Heading 1') to a range.
-
-    Auto-registers built-in Excel presets on new workbooks and merges any explicit overrides cleanly.
-    """
+    """Apply a named Excel cell style (e.g. 'Good', 'Bad', 'Input', 'Calculation', 'Total', 'Heading 1') to a range. workbook_id auto-resolves if 1 workbook is active."""
     try:
         return await excel.apply_cell_style(
-            workbook_id=workbook_id,
+            workbook_id=excel._resolve_workbook_id(workbook_id),
             sheet_name=sheet_name,
             cell_range=cell_range,
             style_name=style_name,
@@ -1295,13 +1453,13 @@ async def add_data_validation(
 
 @_tool(app="excel", compact=False)
 async def list_data_validations(
-    workbook_id: str,
+    workbook_id: Optional[str] = None,
     sheet_name: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """List all data validation rules defined on an Excel worksheet."""
+    """List all data validation rules defined on an Excel worksheet. workbook_id auto-resolves if 1 workbook is active."""
     try:
         return await excel.list_data_validations(
-            workbook_id=workbook_id, sheet_name=sheet_name
+            workbook_id=excel._resolve_workbook_id(workbook_id), sheet_name=sheet_name
         )
     except Exception as exc:
         return _error_response("list_data_validations", exc)
@@ -1309,14 +1467,14 @@ async def list_data_validations(
 
 @_tool(app="excel", compact=False)
 async def clear_data_validations(
-    workbook_id: str,
+    workbook_id: Optional[str] = None,
     sheet_name: Optional[str] = None,
     cell_range: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Clear all data validation rules on a sheet, or only rules matching cell_range."""
+    """Clear all data validation rules on a sheet, or only rules matching cell_range. workbook_id auto-resolves if 1 workbook is active."""
     try:
         return await excel.clear_data_validations(
-            workbook_id=workbook_id, sheet_name=sheet_name, cell_range=cell_range
+            workbook_id=excel._resolve_workbook_id(workbook_id), sheet_name=sheet_name, cell_range=cell_range
         )
     except Exception as exc:
         return _error_response("clear_data_validations", exc)
@@ -1361,8 +1519,8 @@ async def add_excel_table(
 
 @_tool(app="excel", compact=False)
 async def update_excel_table_style(
-    workbook_id: str,
-    table_name: str,
+    workbook_id: Optional[str] = None,
+    table_name: str = "",
     sheet_name: Optional[str] = None,
     style_name: Optional[str] = None,
     show_first_column: Optional[bool] = None,
@@ -1370,10 +1528,10 @@ async def update_excel_table_style(
     show_row_stripes: Optional[bool] = None,
     show_column_stripes: Optional[bool] = None,
 ) -> Dict[str, Any]:
-    """Update the table style (TableStyleLight*/Medium*/Dark*) and banded toggles of an existing Excel Table."""
+    """Update the table style (TableStyleLight*/Medium*/Dark*) and banded toggles of an existing Excel Table. workbook_id auto-resolves if 1 workbook is active."""
     try:
         return await excel.update_table_style(
-            workbook_id=workbook_id,
+            workbook_id=excel._resolve_workbook_id(workbook_id),
             table_name=table_name,
             sheet_name=sheet_name,
             style_name=style_name,
@@ -1567,18 +1725,22 @@ async def excel_live_read_range(
     sheet_name: Optional[str] = None,
     workbook_name: Optional[str] = None,
     include_formulas: bool = False,
+    include_display_values: Optional[bool] = None,
 ) -> Dict[str, Any]:
-    """Read live evaluated cell values (and optionally formulas) from a targeted Excel workbook & sheet. Accepts range_ref or cell_range."""
+    """Read live evaluated values (plus formatted display_values on compact ranges & '###' clipping warnings) from Excel."""
     try:
         effective_ref = range_ref if range_ref is not None else cell_range
         if not effective_ref:
             raise ValueError("Provide range_ref or cell_range (e.g. 'B2:F15')")
-        res = await applescript.read_live_excel_range(
-            range_ref=effective_ref,
-            sheet_name=sheet_name,
-            workbook_name=workbook_name,
-            include_formulas=include_formulas,
-        )
+        kwargs: Dict[str, Any] = {
+            "range_ref": effective_ref,
+            "sheet_name": sheet_name,
+            "workbook_name": workbook_name,
+            "include_formulas": include_formulas,
+        }
+        if include_display_values is not None:
+            kwargs["include_display_values"] = include_display_values
+        res = await applescript.read_live_excel_range(**kwargs)
         return _attach_dirty_in_memory_warning(res)
     except Exception as exc:
         return _error_response("excel_live_read_range", exc)
@@ -1665,17 +1827,21 @@ async def excel_live_batch_read_ranges(
     ranges: List[Dict[str, Any]],
     workbook_name: Optional[str] = None,
     include_formulas: bool = False,
+    include_display_values: Optional[bool] = None,
 ) -> Dict[str, Any]:
-    """Read multiple ranges across one or more live Excel sheets in ONE call.
+    """Read multiple ranges across one or more live Excel sheets in ONE call (auto-includes formatted display_values on compact tables & flags '###' clipped cells).
 
     Pass `ranges` as [{'sheet_name': 'Income Statement', 'range_ref': 'B2:F16'}, {'sheet_name': 'Balance Sheet', 'range_ref': 'F23:F27'}].
     """
     try:
-        res = await applescript.batch_read_live_excel_ranges(
-            ranges=ranges,
-            workbook_name=workbook_name,
-            include_formulas=include_formulas,
-        )
+        kwargs: Dict[str, Any] = {
+            "ranges": ranges,
+            "workbook_name": workbook_name,
+            "include_formulas": include_formulas,
+        }
+        if include_display_values is not None:
+            kwargs["include_display_values"] = include_display_values
+        res = await applescript.batch_read_live_excel_ranges(**kwargs)
         return _attach_dirty_in_memory_warning(res)
     except Exception as exc:
         return _error_response("excel_live_batch_read_ranges", exc)
@@ -1845,11 +2011,11 @@ async def create_presentation(
 
 @_tool(app="powerpoint", compact=False)
 async def add_slide(
-    presentation_id: str,
+    presentation_id: Optional[str] = None,
     layout: str = "Title and Content",
     position: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Add a new slide to a PowerPoint presentation."""
+    """Add a new slide to a PowerPoint presentation. presentation_id auto-resolves if 1 presentation is active."""
     try:
         return sanitize_for_json(
             await powerpoint.add_slide(
@@ -1860,10 +2026,26 @@ async def add_slide(
         return _error_response("add_slide", exc)
 
 
+@_tool(app="powerpoint")
+async def batch_add_slides(
+    slides: List[Dict[str, Any]],
+    presentation_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Add and populate multiple slides (title, subtitle, bullets/content, notes) in ONE call. presentation_id auto-resolves if 1 presentation is active."""
+    try:
+        return sanitize_for_json(
+            await powerpoint.batch_add_slides(
+                presentation_id=presentation_id, slides=slides
+            )
+        )
+    except Exception as exc:
+        return _error_response("batch_add_slides", exc)
+
+
 @_tool(app="powerpoint", compact=False)
 async def add_text_to_slide(
-    slide_id: str,
-    text: str,
+    slide_id: Optional[str] = None,
+    text: str = "",
     placeholder: str = "content",
     formatting: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -1883,8 +2065,8 @@ async def add_text_to_slide(
 
 @_tool(app="powerpoint", compact=False)
 async def add_image_to_slide(
-    slide_id: str,
-    image_source: str,
+    slide_id: Optional[str] = None,
+    image_source: str = "",
     position: Optional[Dict[str, float]] = None,
     size: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
@@ -1903,7 +2085,7 @@ async def add_image_to_slide(
 
 
 @_tool(app="powerpoint", compact=False)
-async def add_speaker_notes(slide_id: str, notes: str) -> Dict[str, Any]:
+async def add_speaker_notes(slide_id: Optional[str] = None, notes: str = "") -> Dict[str, Any]:
     """Add speaker notes to a PowerPoint slide."""
     try:
         return sanitize_for_json(
@@ -1915,11 +2097,11 @@ async def add_speaker_notes(slide_id: str, notes: str) -> Dict[str, Any]:
 
 @_tool(app="powerpoint", compact=False)
 async def save_presentation(
-    presentation_id: str,
-    file_path: str,
+    presentation_id: Optional[str] = None,
+    file_path: str = "",
     format: str = "pptx",
 ) -> Dict[str, Any]:
-    """Save a PowerPoint presentation to file."""
+    """Save a PowerPoint presentation to file. presentation_id auto-resolves if 1 presentation is active."""
     try:
         return sanitize_for_json(
             await powerpoint.save_presentation(
@@ -1977,41 +2159,6 @@ def _discover_finance_skills() -> List[Dict[str, str]]:
     return skills
 
 
-async def _sync_client_roots_from_context(ctx: Any) -> None:
-    """Best-effort sync of MCP client workspace root (e.g. Bionic/VS Code/Cline Project Folder) via roots/list."""
-    try:
-        session = getattr(ctx, "session", None)
-        if session is None:
-            return
-        caps = getattr(session, "client_capabilities", None)
-        if caps is None or getattr(caps, "roots", None) is None:
-            return
-        import asyncio
-        roots_result = await asyncio.wait_for(session.list_roots(), timeout=1.5)
-        roots = getattr(roots_result, "roots", None) or []
-        for root in roots:
-            uri = str(getattr(root, "uri", "") or "")
-            if uri.startswith("file://"):
-                if set_client_project_dir(uri) is not None:
-                    return
-    except Exception:
-        pass
-
-
-if hasattr(mcp, "_handle_call_tool"):
-    _orig_handle_call_tool = mcp._handle_call_tool
-
-    async def _wrapped_handle_call_tool(ctx: Any, params: Any) -> Any:
-        # Sync client MCP roots on check_office_status (refreshes across project switches) or when unset
-        tool_name = getattr(params, "name", "")
-        tool_args = getattr(params, "arguments", None) or {}
-        if (tool_name == "check_office_status" and not tool_args.get("working_dir")) or get_client_project_dir() is None:
-            await _sync_client_roots_from_context(ctx)
-        return await _orig_handle_call_tool(ctx, params)
-
-    mcp._handle_call_tool = _wrapped_handle_call_tool  # type: ignore[method-assign]
-
-
 @_tool(app="core")
 async def check_office_status(
     skill_name: Optional[str] = None,
@@ -2025,6 +2172,8 @@ async def check_office_status(
         discovered = _discover_finance_skills()
         active_proj_dir = get_client_project_dir()
         default_out = get_default_output_dir()
+        blocked_dirs = get_blocked_write_dirs()
+        restrict_to_proj = is_write_restricted_to_project_dir()
         profile_info: Dict[str, Any] = {
             "active_profile": _ACTIVE_PROFILE_LABEL,
             "registered_tool_count": len(_REGISTERED_TOOL_NAMES),
@@ -2034,14 +2183,20 @@ async def check_office_status(
             "available_live_sync_modes": ["auto", "off"],
             "formula_guard_mode": excel.get_formula_guard_mode(),
             "available_formula_guard_modes": ["literals_only", "strict", "off"],
+            "background_mode": get_background_mode(),
+            "available_background_modes": ["no_focus", "strict", "off"],
         }
         if active_proj_dir is not None:
             profile_info["active_project_dir"] = str(active_proj_dir)
         if default_out is not None:
             profile_info["default_output_dir"] = str(default_out)
+        if blocked_dirs:
+            profile_info["blocked_write_dirs"] = [str(d) for d in blocked_dirs]
+        if restrict_to_proj:
+            profile_info["restrict_write_to_project_dir"] = True
         payload: Dict[str, Any] = {
             "status": "running",
-            "server_version": "2.3.1",
+            "server_version": "2.4.0",
             "word_available": versions["word"]["installed"],
             "excel_available": versions["excel"]["installed"],
             "powerpoint_available": versions["powerpoint"]["installed"],
@@ -2059,10 +2214,19 @@ async def check_office_status(
             if matched is None:
                 matched = next((s for s in discovered if query in s["name"].lower()), None)
             if matched is not None:
+                raw_skill_txt = Path(matched["_path"]).read_text(encoding="utf-8")
                 payload["loaded_skill"] = {
                     "name": matched["name"],
                     "version": matched["version"],
-                    "content": Path(matched["_path"]).read_text(encoding="utf-8"),
+                    "precedence_rule": (
+                        "MANDATORY PLAYBOOK OVERRIDE: Follow this <mandatory_playbook>'s exact sheet_names, "
+                        "row coordinates, formulas, and step order verbatim; they strictly override generic modeling priors."
+                    ),
+                    "content": (
+                        f'<mandatory_playbook name="{matched["name"]}" version="{matched["version"]}">\n'
+                        f"{raw_skill_txt}\n"
+                        f"</mandatory_playbook>"
+                    ),
                 }
             else:
                 payload["skill_error"] = f"Skill '{skill_name}' not found."
@@ -2102,9 +2266,10 @@ def main() -> None:
     logger.info(
         f"Starting Microsoft 365 for Mac MCP (m365-mac-mcp, stdio) — profile='{_ACTIVE_PROFILE_LABEL}', "
         f"tools={len(_REGISTERED_TOOL_NAMES)}, live_sync='{excel.get_live_sync_mode()}', "
-        f"formula_guard='{excel.get_formula_guard_mode()}'. "
+        f"formula_guard='{excel.get_formula_guard_mode()}', background_mode='{get_background_mode()}'. "
         f"Valid M365_MCP_PROFILE: {', '.join(_AVAILABLE_PROFILES)}; "
-        f"M365_MCP_LIVE_SYNC: auto | off; M365_MCP_FORMULA_GUARD: literals_only | strict | off."
+        f"M365_MCP_LIVE_SYNC: auto | off; M365_MCP_FORMULA_GUARD: literals_only | strict | off; "
+        f"M365_MCP_BACKGROUND_MODE: no_focus | strict | off."
     )
     mcp.run()
 

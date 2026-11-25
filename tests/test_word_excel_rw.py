@@ -2948,5 +2948,1364 @@ async def test_afk_hardening_all_seven_guards(tmp_path, monkeypatch):
         fg = server.excel._formula_guard_response("literals_only", [{"sheet_name": "S", "cell": "B2"}])
         assert fg["status"] == "confirmation_required"
         assert fg["awaiting_user_action"] is True
+
+        # Bonus universal check: dict-shaped fill_formula (standalone & combined with value) expands cleanly
+        wb3 = await server.create_workbook(title="DictFillTest", sheet_names=["CF"])
+        wb3_id = wb3["workbook_id"]
+        try:
+            res_df = await server.batch_write_ranges(
+                workbook_id=wb3_id,
+                operations=[
+                    {
+                        "sheet": "CF",
+                        "range": "B2:C2",
+                        "value": [[0, 10]],
+                        "fill_formula": {"range": "D2:F2", "formula": "=C2*1.12"},
+                    },
+                    {
+                        "sheet": "CF",
+                        "range": "C3:E3",
+                        "value": None,
+                        "fill_formula": {"range": "C3:E3", "formula": "=C2*0.38"},
+                    },
+                ],
+            )
+            assert res_df["status"] == "success"
+            r2 = await server.read_range(wb3_id, "CF", "B2:F2", evaluate_formulas=False)
+            assert r2["data"][0] == [0, 10, "=C2*1.12", "=D2*1.12", "=E2*1.12"]
+            r3 = await server.read_range(wb3_id, "CF", "C3:E3", evaluate_formulas=False)
+            assert r3["data"][0] == ["=C2*0.38", "=D2*0.38", "=E2*0.38"]
+        finally:
+            await server.close_workbook(wb3_id)
     finally:
         set_client_project_dir(None)
+
+
+@pytest.mark.asyncio
+async def test_wall_street_auto_styler_unicode_unescape_cross_sheet_chart_and_save_linters(tmp_path, monkeypatch):
+    """Verify definitive formatting/chart/width/Unicode fixes across all financial models."""
+    monkeypatch.setenv("M365_MCP_LIVE_SYNC", "off")
+    wb = await server.create_workbook(
+        title="CapEx AutoStyle Test",
+        sheet_names=["Executive Summary", "Assumptions", "Project Cash Flows", "Sensitivity & Charts"],
+    )
+    wb_id = wb["workbook_id"]
+    out_xlsx = tmp_path / "CapEx_AutoStyle.xlsx"
+    try:
+        # 1. Write model including double-escaped \uXXXX display labels (must decode) & formulas (must NOT touch)
+        await server.batch_write_ranges(
+            workbook_id=wb_id,
+            operations=[
+                {
+                    "sheet_name": "Assumptions",
+                    "range": "A1:B6",
+                    "data": [
+                        ["Parameter", "Value"],
+                        ["Project Life (Years)", 6],
+                        ["Year-0 CapEx ($)", 25000000],
+                        ["WACC", 0.105],
+                        ["Tax Rate", 0.25],
+                        ["EBITDA Margin", 0.38],
+                    ],
+                },
+                {
+                    "sheet_name": "Project Cash Flows",
+                    "range": "A1:E8",
+                    "data": [
+                        ["Line Item ($)", 0, 1, 2, 3],
+                        ["Revenue", 0, 10000000, "=C2*1.12", "=D2*1.12"],
+                        ["EBITDA", 0, "=C2*Assumptions!$B$6", "=D2*Assumptions!$B$6", "=E2*Assumptions!$B$6"],
+                        ["-\\u0394NWC", 0, -800000, -96000, -107520],
+                        ["+After-Tax Salvage", 0, 0, 0, 3000000],
+                        ["UFCF", "=-Assumptions!$B$3", "=C3+C4", "=D3+D4", "=E3+E4+E5"],
+                        ["Disc. Factor", 1, "=1/(1+Assumptions!$B$4)^C$1", "=1/(1+Assumptions!$B$4)^D$1", "=1/(1+Assumptions!$B$4)^E$1"],
+                        ["Cum. PV", "=B6", "=B8+C6*C7", "=C8+D6*D7", "=D8+E6*E7"],
+                    ],
+                },
+                {
+                    "sheet_name": "Executive Summary",
+                    "range": "A1:B6",
+                    "data": [
+                        ["KPI", "Value"],
+                        ["Net Present Value (NPV)", "=NPV(Assumptions!$B$4,'Project Cash Flows'!C6:E6)+'Project Cash Flows'!B6"],
+                        ["Internal Rate of Return (IRR)", "=IRR('Project Cash Flows'!B6:E6)"],
+                        ["Profitability Index", "=(B2+Assumptions!$B$3)/Assumptions!$B$3"],
+                        ["Simple Payback (Years)", 5.29],
+                        ["Go / No-Go", '=IF(B2>0,"Go","No-Go")'],
+                    ],
+                },
+                {
+                    "sheet_name": "Sensitivity & Charts",
+                    "range": "A1:E5",
+                    "data": [
+                        ["NPV Sensitivity Analysis", None, None, None, None],
+                        [None, None, None, None, None],
+                        ["WACC \\u2193 / CF Scale \\u2192", None, 0.085, 0.105, 0.125],
+                        [None, 0.8, "=NPV(C$3,'Project Cash Flows'!$C$6:$E$6)*$B4+'Project Cash Flows'!$B$6", "=NPV(D$3,'Project Cash Flows'!$C$6:$E$6)*$B4+'Project Cash Flows'!$B$6", "=NPV(E$3,'Project Cash Flows'!$C$6:$E$6)*$B4+'Project Cash Flows'!$B$6"],
+                        [None, 1.0, "=NPV(C$3,'Project Cash Flows'!$C$6:$E$6)*$B5+'Project Cash Flows'!$B$6", "=NPV(D$3,'Project Cash Flows'!$C$6:$E$6)*$B5+'Project Cash Flows'!$B$6", "=NPV(E$3,'Project Cash Flows'!$C$6:$E$6)*$B5+'Project Cash Flows'!$B$6"],
+                    ],
+                },
+            ],
+        )
+
+        wb_obj = server.excel.active_workbooks[wb_id]["workbook_object"]
+        # Unicode unescape check on non-formula display labels
+        assert wb_obj["Project Cash Flows"]["A4"].value == "-ΔNWC"
+        assert wb_obj["Sensitivity & Charts"]["A3"].value == "WACC ↓ / CF Scale →"
+
+        # 2. Save BEFORE formatting & chart -> linter catches unformatted formulas, missing chart, AND missing column widths!
+        pre_save = await server.save_workbook(wb_id, file_path=str(out_xlsx))
+        assert pre_save["status"] == "success"
+        pre_warns = " | ".join(pre_save.get("sanity_warnings") or [])
+        assert "general" in pre_warns.lower()
+        assert "0 charts" in pre_warns.lower()
+        assert "column widths" in pre_warns.lower()
+
+        # 3. Cross-sheet create_chart places chart on 'Sensitivity & Charts' sourced from 'Project Cash Flows'
+        chart_res = await server.create_chart(
+            workbook_id=wb_id,
+            sheet_name="Sensitivity & Charts",
+            chart_type="column",
+            data_range="'Project Cash Flows'!A1:E2",
+            chart_title="Project Revenue Ramp",
+            position="A10",
+        )
+        assert chart_res["status"] == "success"
+        assert chart_res["source_sheet"] == "Project Cash Flows"
+        assert len(wb_obj["Sensitivity & Charts"]._charts) == 1
+
+        # 4. batch_format_workbook(auto_color_financial_model=True) WITHOUT explicit column_widths or number_formats
+        #    automatically applies institutional Wall Street formats, headers, totals, AND auto-fitted widths!
+        fmt_res = await server.batch_format_workbook(
+            workbook_id=wb_id,
+            operations=[
+                {"sheet_name": "Executive Summary", "auto_color_financial_model": True},
+                {"sheet_name": "Assumptions", "auto_color_financial_model": True},
+                {"sheet_name": "Project Cash Flows", "auto_color_financial_model": True},
+                {"sheet_name": "Sensitivity & Charts", "auto_color_financial_model": True},
+            ],
+        )
+        assert fmt_res["status"] == "success"
+        for sheet_res in fmt_res["sheets"]:
+            assert sheet_res["column_widths_set"] > 0
+
+        # Verify smart Wall Street number formats, headers, totals, and unclipped column widths
+        ws_cf = wb_obj["Project Cash Flows"]
+        assert ws_cf["A1"].fill.start_color.rgb.endswith("1F4E79")
+        assert ws_cf["C2"].number_format == '$#,##0;($#,##0);"-"'
+        assert ws_cf["C6"].number_format == '$#,##0;($#,##0);"-"'
+        assert ws_cf["C6"].font.bold is True and ws_cf["C6"].fill.start_color.rgb.endswith("D9E1F2")
+        assert ws_cf["C7"].number_format == "0.000"
+        assert ws_cf.column_dimensions["A"].width >= 20.0
+
+        ws_es = wb_obj["Executive Summary"]
+        assert ws_es["B2"].number_format == '$#,##0;($#,##0);"-"'
+        assert ws_es["B3"].number_format == "0.0%"
+        assert ws_es["B4"].number_format == '0.00"x"'
+        assert ws_es["B5"].number_format == "0.00"
+
+        ws_as = wb_obj["Assumptions"]
+        assert ws_as["B2"].number_format == "#,##0"
+        assert ws_as["B3"].number_format == '$#,##0;($#,##0);"-"'
+        assert ws_as["B4"].number_format == "0.0%"
+        # Assumptions % row (EBITDA Margin) must NOT get shaded as a total row
+        assert ws_as["A6"].fill.fill_type is None
+
+        ws_sc = wb_obj["Sensitivity & Charts"]
+        assert ws_sc["C3"].number_format == "0.0%"
+        assert ws_sc["B4"].number_format == "0.0%"
+        assert ws_sc["C4"].number_format == '$#,##0;($#,##0);"-"'
+        assert ws_sc.column_dimensions["A"].width >= 20.0
+
+        # 5. Re-save AFTER formatting + chart -> ZERO sanity_warnings!
+        post_save = await server.save_workbook(wb_id, file_path=str(out_xlsx))
+        assert post_save["status"] == "success"
+        assert "sanity_warnings" not in post_save
+
+        # 6. Universal formula quote sanitizer repairs Bionic triple-escaped \" and standalone '...' literals
+        #    while preserving 'Sheet Name'!, escaped sheet apostrophes ('Q1''26 P&L'!), and "Bob's Store"
+        from integrations.applescript_bridge import AppleScriptBridge
+        from utils.validators import sanitize_excel_formula_quotes
+
+        await server.write_cell(
+            wb_id,
+            "Executive Summary",
+            "B6",
+            "=IF(B2>0,'Go','No-Go')",
+        )
+        assert wb_obj["Executive Summary"]["B6"].value == '=IF(B2>0,"Go","No-Go")'
+
+        await server.write_cell(
+            wb_id,
+            "Executive Summary",
+            "B5",
+            '=IF(MAX(\'Project Cash Flows\'!$B$8:$E$8)<0,\\">6 yrs\\",COUNTIF(\'Project Cash Flows\'!$B$8:$E$8,\\"<0\\"))',
+        )
+        assert (
+            wb_obj["Executive Summary"]["B5"].value
+            == '=IF(MAX(\'Project Cash Flows\'!$B$8:$E$8)<0,">6 yrs",COUNTIF(\'Project Cash Flows\'!$B$8:$E$8,"<0"))'
+        )
+        assert (
+            sanitize_excel_formula_quotes("=IF(A1=\"Bob's Store\",'Q1''26 P&L'!B2,'No')")
+            == '=IF(A1="Bob\'s Store",\'Q1\'\'26 P&L\'!B2,"No")'
+        )
+        assert (
+            AppleScriptBridge._sanitize_live_excel_formula("=IF(B2>0,'Go','No-Go')", ["Executive Summary"])
+            == '=IF(B2>0,"Go","No-Go")'
+        )
+
+        # 7. Exact reproduction of real-world Bionic/Qwen formatting, chart & outflow-sign failure modes:
+        #    (a) {"operation": ...} alias + sheet_name=None broadcasts across ALL 4 sheets
+        op_alias_res = await server.batch_format_workbook(
+            workbook_id=wb_id,
+            operations=[
+                {"operation": "auto_color_financial_model", "sheet_name": None},
+                {"operation": "auto_fit_columns", "sheet_name": None},
+                {"operation": "freeze_panes", "sheet_name": "B2"},
+            ],
+        )
+        assert op_alias_res["status"] == "success"
+        assert op_alias_res["sheets_formatted"] == 12  # 3 workbook-wide ops x 4 tabs
+        assert wb_obj["Project Cash Flows"].freeze_panes == "B2"
+
+        #    (b) Multi-sheet range op WITHOUT sheet_name MUST fail loudly (never silently clobber Executive Summary!)
+        bad_fmt = await server.batch_format_workbook(
+            workbook_id=wb_id,
+            operations=[{"range": "B4:B8", "formatting": {"number_format": "0.0%"}}],
+        )
+        assert bad_fmt["status"] == "error"
+        assert "sheet_name" in bad_fmt["error"]
+
+        #    (c) create_chart on formula-only matrix C4:E5 auto-picks C3:E3 headers + B4:B5 categories & solid neg bars
+        sens_chart_res = await server.create_chart(
+            workbook_id=wb_id,
+            sheet_name="Sensitivity & Charts",
+            chart_type="column",
+            data_range="C4:E5",
+            chart_title="NPV Sensitivity",
+            position="A25",
+        )
+        assert sens_chart_res["status"] == "success"
+        sens_chart = wb_obj["Sensitivity & Charts"]._charts[-1]
+        assert len(sens_chart.series) == 3  # 3 WACC columns C..E, NOT eating Row 4 as legend titles!
+        assert all(ser.invertIfNegative is False for ser in sens_chart.series)
+        assert sens_chart.legend.position == "b"
+        assert sens_chart.x_axis.tickLblPos == "low"
+
+        #    (d) Outflow sign linter catches positive '=Assumptions!$B$3' on '- CapEx' row
+        await server.batch_write_ranges(
+            workbook_id=wb_id,
+            operations=[{"sheet_name": "Project Cash Flows", "range": "A9:B9", "data": [["- CapEx", "=Assumptions!$B$3"]]}],
+        )
+        sign_save = await server.save_workbook(wb_id, file_path=str(out_xlsx))
+        assert any("outflow sign" in w.lower() for w in (sign_save.get("sanity_warnings") or []))
+    finally:
+        await server.close_workbook(wb_id)
+
+
+@pytest.mark.asyncio
+async def test_imp002_live_display_values_and_clipping_detection(monkeypatch):
+    """Verify IMP-002: live formatted display_values on compact tables, ### clipping warning, and large-range token guard."""
+    from integrations.applescript_bridge import AppleScriptBridge, _FS, _GS, _RS, _US
+
+    bridge = AppleScriptBridge()
+    # Mock AppleScript output with raw floats + formatted display strings (including a '###' clipped cell!)
+    val_blk = _RS.join([
+        _US.join(["NPV ($)", "-3224566.54"]),
+        _US.join(["IRR", "0.066322"]),
+        _US.join(["Wide Val", "99999999999"]),
+    ])
+    str_blk = _RS.join([
+        _US.join(["NPV ($)", "($3,225)"]),
+        _US.join(["IRR", "6.6%"]),
+        _US.join(["Wide Val", "########"]),
+    ])
+    fake_batch_raw = f"CapEx_Stress.xlsx{_FS}" + _GS.join([f"Executive Summary{_US}A6:B8", val_blk, "", str_blk])
+
+    async def fake_exec(script, args=None, timeout=45.0):
+        return fake_batch_raw
+
+    monkeypatch.setattr(bridge, "execute_applescript", fake_exec)
+    res = await bridge.batch_read_live_excel_ranges(
+        ranges=[{"sheet_name": "Executive Summary", "range_ref": "A6:B8"}],
+        workbook_name="CapEx_Stress.xlsx",
+    )
+    assert res["status"] == "success"
+    r0 = res["results"][0]
+    assert r0["display_values"][0][1] == "($3,225)"
+    assert r0["display_values"][1][1] == "6.6%"
+    assert "B8" in r0["clipped_cells"]
+    assert "Executive Summary!B8" in res["clipped_cells"]
+    assert "###" in res["warning"]
+
+    # Large unclipped range (>50 cells) omits display_values in 'auto' mode to save tokens
+    big_vals = [[str(i), str(i * 1000)] for i in range(30)]  # 60 cells
+    big_str = _RS.join([_US.join([str(i), f"${i},000"]) for i in range(30)])
+    disp_big, clipped_big = bridge._process_live_display_strings(big_vals, big_str, "A1:B30", "auto")
+    assert disp_big is None and clipped_big == []
+
+
+@pytest.mark.asyncio
+async def test_imp003_layout_agnostic_multi_table_formatting_and_audit(tmp_path, monkeypatch):
+    """Verify IMP-003: arbitrary (row, col) headers, stacked & side-by-side tables, ERP code col, multilingual totals, and block-scoped audit."""
+    monkeypatch.setenv("M365_MCP_LIVE_SYNC", "off")
+    wb = await server.create_workbook(title="MultiTable Layout", sheet_names=["MultiTab", "ERP_ES"])
+    wb_id = wb["workbook_id"]
+    out_xlsx = tmp_path / "MultiTable_IMP003.xlsx"
+    try:
+        # Sheet 1: Indented (blank Col A), 4-line title in B1:B4, Table 1 (B6:F10) side-by-side with Table 2 (H6:K9),
+        # AND a stacked Table 3 (B13:F17) below! Plant a silent wrong-period bug in Table 1 E9 (=E8/D7 instead of =E8/E7).
+        await server.batch_write_ranges(
+            workbook_id=wb_id,
+            operations=[
+                {
+                    "sheet_name": "MultiTab",
+                    "range": "B1:B4",
+                    "data": [
+                        ["Apex Global Industrial Holdings Corporation — Very Long Title That Must Not Bloat Col B"],
+                        ["Consolidated Segment Schedule"],
+                        ["Fiscal Years: 2024 – 2027"],
+                        ["In USD $"],
+                    ],
+                },
+                {
+                    "sheet_name": "MultiTab",
+                    "range": "B6:F10",
+                    "data": [
+                        ["Line Item", 2024, 2025, 2026, 2027],
+                        ["Revenue", 100000, 110000, 121000, 133100],
+                        ["Gross Profit", 40000, 44000, 48400, 53240],
+                        ["Gross Margin %", "=C8/C7", "=D8/D7", "=E8/D7", "=F8/F7"],  # <-- E9 wrong-period bug!
+                        ["Net Income", "=C8-10000", "=D8-10000", "=E8-10000", "=F8-10000"],
+                    ],
+                },
+                {
+                    # Side-by-side Table 2 on SAME rows (6..9) in Columns H..K with totally different formulas!
+                    "sheet_name": "MultiTab",
+                    "range": "H6:K9",
+                    "data": [
+                        ["KPI", 2024, 2025, 2026],
+                        ["Debt", 50000, 45000, 40000],
+                        ["Cash", 10000, 15000, 20000],
+                        ["Net Debt", "=I7-I8", "=J7-J8", "=K7-K8"],
+                    ],
+                },
+                {
+                    # Stacked Table 3 (2-way sensitivity matrix on a non-'Sensitivity' tab!) in B13:E16
+                    "sheet_name": "MultiTab",
+                    "range": "B13:E16",
+                    "data": [
+                        ["WACC / Scale", 0.08, 0.10, 0.12],
+                        [0.9, "=C10*0.9", "=D10*0.9", "=E10*0.9"],
+                        [1.0, "=C10*1.0", "=D10*1.0", "=E10*1.0"],
+                        [1.1, "=C10*1.1", "=D10*1.1", "=E10*1.1"],
+                    ],
+                },
+                {
+                    # Sheet 2: ERP trial balance starting at D5 with Account Code in Col D, Spanish names in Col E,
+                    # mid-table section subheader, and vertical =SUM(...) total with no English keywords!
+                    "sheet_name": "ERP_ES",
+                    "range": "D5:G10",
+                    "data": [
+                        ["Codigo", "Cuenta", 2024, 2025],
+                        [None, "ACTIVO CORRIENTE", None, None],
+                        [1010, "Efectivo", 50000, 60000],
+                        [1020, "Cuentas por Cobrar", 30000, 35000],
+                        [1030, "Inventarios", 20000, 25000],
+                        [1099, "Suma Activo Circulante", "=SUM(F7:F9)", "=SUM(G7:G9)"],
+                    ],
+                },
+            ],
+        )
+
+        fmt_res = await server.batch_format_workbook(
+            workbook_id=wb_id,
+            operations=[{"auto_color_financial_model": True, "auto_fit_columns": True, "freeze_panes": "auto"}],
+        )
+        assert fmt_res["status"] == "success"
+        wb_obj = server.excel.active_workbooks[wb_id]["workbook_object"]
+        ws1 = wb_obj["MultiTab"]
+        ws2 = wb_obj["ERP_ES"]
+
+        # Row-6 year headers styled white-on-navy with integer '0' (NOT blue '$2,024'!)
+        assert ws1["C6"].fill.start_color.rgb.endswith("1F4E79")
+        assert ws1["C6"].number_format == "0"
+        assert ws1["I6"].fill.start_color.rgb.endswith("1F4E79")
+        assert ws1["I6"].number_format == "0"
+        # Overflow 85-char title in B1 must NOT bloat Col B width to 60!
+        assert ws1.column_dimensions["B"].width < 35.0
+        # Dynamic freeze_panes='auto' froze right below Row-6 header and right of Col-B label -> C7!
+        assert ws1.freeze_panes == "C7"
+        # Matrix table detected structurally on 'MultiTab' -> axes formatted as %!
+        assert ws1["C13"].number_format == "0.0%"
+        assert ws1["B14"].number_format == "0.0%"
+        # ERP_ES: account code col D, label col E -> freeze_panes='auto' -> F6, Spanish SUM row auto-styled as Total!
+        assert ws2.freeze_panes == "F6"
+        assert ws2["F10"].font.bold is True and ws2["F10"].fill.start_color.rgb.endswith("D9E1F2")
+        # Mid-table section subheader 'ACTIVO CORRIENTE' bold navy
+        assert ws2["E6"].font.bold is True
+
+        # inspect_workbook surfaces detected_tables for both tabs
+        insp = await server.inspect_workbook(workbook_id=wb_id)
+        assert len(insp["sheets"][0]["detected_tables"]) == 3
+        assert insp["sheets"][1]["detected_tables"][0]["code_col"] == "D"
+        assert insp["sheets"][1]["detected_tables"][0]["label_col"] == "E"
+
+        # audit_workbook_formulas: catches E9 with exact col_header=2026 & row_label='Gross Margin %',
+        # zero side-by-side collision with Table 2 (H6:K9), and zero false-positive suspicious_literals on year headers/axes!
+        audit = await server.audit_workbook_formulas(workbook_id=wb_id)
+        assert audit["row_inconsistency_count"] == 1
+        inc = audit["row_inconsistencies"][0]
+        assert inc["cell"] == "E9"
+        assert inc["col_header"] == 2026
+        assert inc["row_label"] == "Gross Margin %"
+        assert inc["expected_formula"] == "=E8/E7"
+        assert audit["suspicious_literal_count"] == 0
+    finally:
+        await server.close_workbook(wb_id)
+
+
+@pytest.mark.asyncio
+async def test_imp001_smart_magnitude_4line_headers_mixed_assumptions_and_jump_linter(tmp_path, monkeypatch):
+    """Verify IMP-001: 4-line header_metadata, Option-A Smart Magnitude ($1,000's & $ Millions whole numbers), mixed Assumptions, per-share protection, and 1,000x jump linter."""
+    monkeypatch.setenv("M365_MCP_LIVE_SYNC", "off")
+
+    # 1. Millions-scale model ($25M CapEx, $350K maint, $125/unit) -> Smart Magnitude auto-resolves to Thousands ($#,##0,)
+    wb = await server.create_workbook(
+        title="Mexico Line CapEx",
+        sheet_names=["Executive Summary", "Assumptions", "Project Cash Flows"],
+        header_metadata={
+            "entity": "Apex Industrials — Mexico Packaging Line",
+            "period": "Projected Years: Year 0 to Year 6",
+            "currency": "USD",
+            "magnitude": "auto",
+        },
+    )
+    wb_id = wb["workbook_id"]
+    assert wb["table_start_row"] == 6
+    assert wb["recommended_freeze_panes"] == "B7"
+    out_xlsx = tmp_path / "SmartMag_CapEx.xlsx"
+    try:
+        await server.batch_write_ranges(
+            workbook_id=wb_id,
+            operations=[
+                {
+                    "sheet_name": "Assumptions",
+                    "range": "A6:C11",
+                    "data": [
+                        ["Parameter", "Value", "Unit"],
+                        ["Year-0 CapEx", 25000000, "USD exact ($25M)"],
+                        ["Annual Maintenance", 350000, "USD exact ($350K)"],
+                        ["Unit Selling Price", 125.50, "USD / unit"],
+                        ["WACC", 0.105, "%"],
+                        ["Diluted Shares", 10000000, "Shares"],
+                    ],
+                },
+                {
+                    "sheet_name": "Project Cash Flows",
+                    "range": "A6:D9",
+                    "data": [
+                        ["Line Item", 0, 1, 2],
+                        ["Revenue", 0, 10000000, "=C7*1.12"],
+                        ["- CapEx", "=-Assumptions!$B$7", 0, 0],
+                        ["UFCF", "=B8", "=C7-Assumptions!$B$8", "=D7-Assumptions!$B$8"],
+                    ],
+                },
+                {
+                    "sheet_name": "Executive Summary",
+                    "range": "A6:B9",
+                    "data": [
+                        ["KPI", "Value"],
+                        ["Net Present Value (NPV)", "=NPV(Assumptions!$B$10,'Project Cash Flows'!C9:D9)+'Project Cash Flows'!B9"],
+                        ["Implied Share Price", "=B7/Assumptions!$B$11"],
+                        ["IRR", "=IRR('Project Cash Flows'!B9:D9)"],
+                    ],
+                },
+            ],
+        )
+
+        fmt_res = await server.batch_format_workbook(
+            workbook_id=wb_id,
+            operations=[{"auto_color_financial_model": True, "auto_fit_columns": True, "freeze_panes": "auto"}],
+        )
+        assert fmt_res["status"] == "success"
+        wb_obj = server.excel.active_workbooks[wb_id]["workbook_object"]
+
+        # Row 4 auto-synced to Smart Magnitude ('In USD $1,000's') on statements, and transparent exact-basis on Assumptions!
+        ws_cf = wb_obj["Project Cash Flows"]
+        ws_es = wb_obj["Executive Summary"]
+        ws_as = wb_obj["Assumptions"]
+        assert "1,000's" in ws_cf["A4"].value
+        assert "except per-share" in ws_es["A4"].value.lower()
+        assert "Exact USD $" in ws_as["A4"].value and "1,000's" in ws_as["A4"].value
+
+        # Option-A whole-number trailing-comma scaling on statements; exact currency on Assumptions & per-unit/per-share rows!
+        assert ws_cf["C7"].number_format == '$#,##0,;($#,##0,);"-"'
+        assert ws_es["B7"].number_format == '$#,##0,;($#,##0,);"-"'
+        assert ws_es["B8"].number_format == '$#,##0.00;($#,##0.00);"-"'  # Implied Share Price protected!
+        assert ws_es["B9"].number_format == "0.0%"
+        assert ws_as["B7"].number_format == '$#,##0;($#,##0);"-"'        # Assumptions CapEx exact $25,000,000
+        assert ws_as["B9"].number_format == '$#,##0.00;($#,##0.00);"-"'  # Unit Selling Price exact $125.50
+        assert ws_cf.freeze_panes == "B7"
+
+        # Save clean (0 warnings!)
+        saved = await server.save_workbook(wb_id, file_path=str(out_xlsx))
+        assert saved["status"] == "success"
+        assert "sanity_warnings" not in saved
+
+        # 2. 1,000x magnitude-jump linter catches accidental $M literal (-25) mixed into a $25,000,000 workbook!
+        await server.batch_write_ranges(
+            workbook_id=wb_id,
+            operations=[{"sheet_name": "Executive Summary", "range": "A10:B10", "data": [["Manual Outlay", 25]]}],
+        )
+        # Write a separate small-scale sheet to trigger cross-sheet jump check cleanly
+        await server.add_worksheet(wb_id, "BadScale")
+        await server.batch_write_ranges(
+            workbook_id=wb_id,
+            operations=[{"sheet_name": "BadScale", "range": "A1:B2", "data": [["Item", "Val"], ["Revenue", 10]]}],
+        )
+        jump_save = await server.save_workbook(wb_id, file_path=str(out_xlsx))
+        assert any("magnitude mismatch" in w.lower() for w in (jump_save.get("sanity_warnings") or []))
+    finally:
+        await server.close_workbook(wb_id)
+
+    # 3. Billions-scale EUR model (€2.5B) -> auto-resolves to EUR € Millions (€#,##0,,)
+    wb_b = await server.create_workbook(
+        title="MegaCap EUR DCF",
+        sheet_names=["DCF Valuation"],
+        header_metadata={"entity": "EuroCorp SA", "period": "FY2025 – FY2030", "currency": "EUR", "magnitude": "auto"},
+    )
+    wb_b_id = wb_b["workbook_id"]
+    try:
+        await server.batch_write_ranges(
+            workbook_id=wb_b_id,
+            operations=[{
+                "sheet_name": "DCF Valuation",
+                "range": "A6:C8",
+                "data": [
+                    ["Line Item", 2025, 2026],
+                    ["Revenue", 2500000000, "=B7*1.08"],
+                    ["EBITDA", "=B7*0.30", "=C7*0.30"],
+                ],
+            }],
+        )
+        await server.batch_format_workbook(
+            workbook_id=wb_b_id,
+            operations=[{"auto_color_financial_model": True, "auto_fit_columns": True, "freeze_panes": "auto"}],
+        )
+        ws_b = server.excel.active_workbooks[wb_b_id]["workbook_object"]["DCF Valuation"]
+        assert ws_b["A4"].value == "In EUR € Millions"
+        assert ws_b["B7"].number_format == '€#,##0,,;(€#,##0,,);"-"'
+    finally:
+        await server.close_workbook(wb_b_id)
+
+
+@pytest.mark.asyncio
+async def test_audit_hardening_sparse_ghost_sheet_afk_live_guard_error_hints_and_atomic_save(tmp_path, monkeypatch):
+    """Verify the 5 architectural hardening fixes: sparse 1M-row ghost sheet speed, live Formula Guard AFK, PermissionError vs -1743 split, profile-aware hints, and atomic saves."""
+    import time
+    from integrations.applescript_bridge import AppleScriptBridge
+    from utils.sheet_layout import analyze_worksheet_layout
+
+    monkeypatch.setenv("M365_MCP_LIVE_SYNC", "off")
+
+    # 1. Live Formula Guard emits awaiting_user_action=True + HARD STOP (AFK parity with ExcelController)
+    fg_live = AppleScriptBridge._formula_guard_response("literals_only", [{"sheet": "S1", "cell": "B2"}])
+    assert fg_live["status"] == "confirmation_required"
+    assert fg_live["awaiting_user_action"] is True
+    assert "hard stop" in fg_live["instruction"].lower()
+
+    # 2. _error_response cleanly separates OS filesystem PermissionError (Files & Folders) from AppleScript -1743
+    fs_perm = server._error_response("save_workbook", PermissionError("[Errno 1] Operation not permitted: '~/Desktop/X.xlsx'"))
+    assert fs_perm["awaiting_user_action"] is True
+    assert "files & folders" in fs_perm["hint"].lower()
+    assert "-1743" not in fs_perm["hint"]
+
+    auto_1743 = server._error_response("excel_live_open", RuntimeError("Not authorized to send Apple events (-1743)"))
+    assert auto_1743["awaiting_user_action"] is True
+    assert "-1743" in auto_1743["hint"]
+
+    # 3. Profile-aware hints NEVER suggest unregistered ghost tools in compact profiles
+    orig_reg = list(server._REGISTERED_TOOL_NAMES)
+    try:
+        server._REGISTERED_TOOL_NAMES[:] = ["create_workbook", "open_workbook", "batch_write_ranges"]
+        nf_err = server._error_response("batch_write_ranges", ValueError("Workbook 'bad-id' not found."))
+        assert "list_active_workbooks" not in nf_err.get("hint", "")
+        assert "create_workbook" in nf_err.get("hint", "")
+    finally:
+        server._REGISTERED_TOOL_NAMES[:] = orig_reg
+
+    # 4. Sparse ws._cells iteration handles a ghost 500,000-row worksheet in < 1s without allocating empty cells!
+    wb = await server.create_workbook(title="GhostRowTest", sheet_names=["Ghost"])
+    wb_id = wb["workbook_id"]
+    out_xlsx = tmp_path / "Atomic_Ghost.xlsx"
+    try:
+        ws = server.excel.active_workbooks[wb_id]["workbook_object"]["Ghost"]
+        ws["A1"] = "Item"
+        ws["B1"] = "Val"
+        ws["A2"] = "Rev"
+        ws["B2"] = 10000
+        # Plant a ghost formatted blank cell way down at row 500,000 (common in corporate Excel files!)
+        ws.cell(row=500000, column=1).value = None
+        assert ws.max_row == 500000
+
+        t0 = time.perf_counter()
+        lay = analyze_worksheet_layout(ws)
+        audit = await server.audit_workbook_formulas(workbook_id=wb_id)
+        elapsed = time.perf_counter() - t0
+        assert elapsed < 2.0, f"Sparse scan took too long on 500k ghost sheet: {elapsed:.2f}s"
+        assert len(lay.data_blocks()) == 1
+        assert audit["clean"] is True
+        # Ensure we did NOT allocate 500,000 empty cells in ws._cells!
+        assert len(ws._cells) < 50
+
+        # 5. Atomic save leaves no orphan .tmp files and attaches attention_required when warnings exist
+        saved = await server.save_workbook(wb_id, file_path=str(out_xlsx))
+        assert saved["status"] == "success"
+        assert out_xlsx.exists()
+        assert not list(tmp_path.glob("*.tmp.*"))
+    finally:
+        await server.close_workbook(wb_id)
+
+
+@pytest.mark.asyncio
+async def test_imp005_session_scoped_working_dir_and_write_fences(tmp_path, monkeypatch):
+    """Verify IMP-005: async session-isolated working_dir, M365_MCP_BLOCKED_DIRS, and M365_MCP_RESTRICT_WRITE_TO_PROJECT_DIR."""
+    import asyncio
+    from utils.validators import (
+        clear_session_project_dir,
+        get_client_project_dir,
+        reset_current_session_id,
+        resolve_file_path,
+        set_client_project_dir,
+        set_current_session_id,
+    )
+
+    proj_a = tmp_path / "ProjectA"
+    proj_b = tmp_path / "ProjectB"
+    blocked_dir = tmp_path / "BlockedVault"
+    external_dir = tmp_path / "ExternalOther"
+    for d in (proj_a, proj_b, blocked_dir, external_dir):
+        d.mkdir()
+
+    # 1. Concurrent async sessions have strictly isolated working_dir contexts
+    async def run_session(sess_id: str, folder: Path, filename: str) -> Path:
+        tok = set_current_session_id(sess_id)
+        try:
+            set_client_project_dir(folder)
+            await asyncio.sleep(0.02)
+            assert get_client_project_dir() == folder.resolve()
+            return resolve_file_path(filename, for_write=True)
+        finally:
+            clear_session_project_dir(sess_id)
+            reset_current_session_id(tok)
+
+    path_a, path_b = await asyncio.gather(
+        run_session("sess_alpha", proj_a, "Alpha.xlsx"),
+        run_session("sess_beta", proj_b, "Beta.xlsx"),
+    )
+    assert path_a == (proj_a / "Alpha.xlsx").resolve()
+    assert path_b == (proj_b / "Beta.xlsx").resolve()
+
+    # Unregistered session never inherits another session's folder
+    tok_c = set_current_session_id("sess_clean")
+    try:
+        assert get_client_project_dir() is None
+    finally:
+        reset_current_session_id(tok_c)
+
+    # 2. M365_MCP_BLOCKED_DIRS blocks writes cleanly with awaiting_user_action + HARD STOP
+    monkeypatch.setenv("M365_MCP_BLOCKED_DIRS", str(blocked_dir))
+    monkeypatch.setenv("M365_MCP_LIVE_SYNC", "off")
+    wb = await server.create_workbook(title="FenceTest", sheet_names=["S1"])
+    wb_id = wb["workbook_id"]
+    try:
+        res_blocked = await server.save_workbook(wb_id, file_path=str(blocked_dir / "Secret.xlsx"))
+        assert res_blocked["status"] == "error"
+        assert res_blocked["error_type"] == "PermissionError"
+        assert res_blocked["awaiting_user_action"] is True
+        assert "hard stop" in res_blocked["hint"].lower()
+        assert "m365_mcp_blocked_dirs" in res_blocked["error"].lower()
+        assert "files & folders" not in res_blocked["hint"].lower()
+
+        # 3. M365_MCP_RESTRICT_WRITE_TO_PROJECT_DIR restricts writes strictly to active Project Working Folder
+        monkeypatch.delenv("M365_MCP_BLOCKED_DIRS", raising=False)
+        monkeypatch.setenv("M365_MCP_RESTRICT_WRITE_TO_PROJECT_DIR", "true")
+        set_client_project_dir(proj_a)
+        try:
+            res_ext = await server.save_workbook(wb_id, file_path=str(external_dir / "Escape.xlsx"))
+            assert res_ext["status"] == "error"
+            assert res_ext["error_type"] == "PermissionError"
+            assert res_ext["awaiting_user_action"] is True
+            assert "m365_mcp_restrict_write_to_project_dir" in res_ext["error"].lower()
+
+            res_ok = await server.save_workbook(wb_id, file_path=str(proj_a / "Allowed.xlsx"))
+            assert res_ok["status"] == "success"
+            assert (proj_a / "Allowed.xlsx").exists()
+
+            # 4. check_office_status surfaces fence config cleanly
+            monkeypatch.setenv("M365_MCP_BLOCKED_DIRS", str(blocked_dir))
+            status = await server.check_office_status()
+            assert status["profile"]["restrict_write_to_project_dir"] is True
+            assert str(blocked_dir.resolve()) in status["profile"]["blocked_write_dirs"]
+        finally:
+            set_client_project_dir(None)
+    finally:
+        await server.close_workbook(wb_id)
+
+
+@pytest.mark.asyncio
+async def test_imp004_word_and_ppt_ergonomics_parity(tmp_path):
+    """Verify IMP-004: optional Word/PPT IDs, Word deferred save & word_live_save dirty guard, and PPT batch_add_slides."""
+    from pptx import Presentation
+
+    # Ensure clean controller state
+    for did in list(server.word.active_documents):
+        await server.close_document(did)
+    server.powerpoint.active_presentations.clear()
+
+    # 1. Word optional document_id auto-resolution + deferred dirty tracking + word_live_save guard
+    doc_meta = await server.create_document(title="CFO Brief")
+    doc_id = doc_meta["document_id"]
+    out_docx = tmp_path / "CFO_Brief.docx"
+    try:
+        assert server.word.active_documents[doc_id]["dirty"] is False
+        h_res = await server.add_heading(text="Executive Summary", level=1)
+        assert h_res["status"] == "success"
+        assert h_res["document_id"] == doc_id
+        assert server.word.active_documents[doc_id]["dirty"] is True
+
+        p_res = await server.add_paragraph(text="NPV is $25.0M at 10.5% WACC.")
+        assert p_res["status"] == "success"
+
+        t_res = await server.add_table(rows=2, columns=2, data=[["KPI", "Value"], ["IRR", "18.4%"]])
+        assert t_res["status"] == "success"
+
+        # word_live_save refuses to overwrite while in-memory edits are dirty (omitted doc name)
+        guard_res = await server.word_live_save()
+        assert guard_res["status"] == "error"
+        assert guard_res["error_type"] == "UnsavedInMemoryEditsError"
+        assert "save_document" in guard_res["hint"]
+
+        # Save via omitted document_id clears dirty flag and persists atomically
+        save_res = await server.save_document(file_path=str(out_docx))
+        assert save_res["status"] == "success"
+        assert out_docx.exists()
+        assert server.word.active_documents[doc_id]["dirty"] is False
+
+        # Subsequent edit re-dirties CFO_Brief.docx -> word_live_save(document_name="CFO_Brief.docx") is ALSO blocked!
+        await server.add_paragraph(text="Appendix: Sensitivity checked.")
+        assert server.word.active_documents[doc_id]["dirty"] is True
+        guard_named = await server.word_live_save(document_name="CFO_Brief.docx")
+        assert guard_named["status"] == "error"
+        assert guard_named["error_type"] == "UnsavedInMemoryEditsError"
+        await server.save_document()
+        assert server.word.active_documents[doc_id]["dirty"] is False
+
+        read_res = await server.read_document()
+        assert read_res["status"] == "success"
+        assert any("NPV is $25.0M" in p["text"] for p in read_res["paragraphs"])
+        assert read_res["table_count"] == 1
+    finally:
+        close_res = await server.close_document()
+        assert close_res["status"] == "success"
+
+    # 2. PowerPoint optional presentation_id auto-resolution + 1-call batch_add_slides
+    deck = await server.create_presentation(title="Q4 Boardroom Review")
+    pres_id = deck["presentation_id"]
+    out_pptx = tmp_path / "Boardroom_Deck.pptx"
+    batch_res = await server.batch_add_slides(
+        slides=[
+            {
+                "layout": "title_and_content",
+                "title": "Executive Summary",
+                "bullets": ["• Revenue grew 14.2% YoY", "- EBITDA margin reached 38.0%"],
+                "notes": "Reconciled verbatim to live Excel KPI tab.",
+            },
+            {
+                "layout": "Title and Content",
+                "title": "Capital Allocation",
+                "content": "• Year-0 CapEx: $25.0M\n• Payback: 3.8 years",
+            },
+            {
+                "layout": "section_header",
+                "title": "Risks & Sensitivities",
+                "subtitle": "WACC ±200 bps and Volume ±20%",
+            },
+        ]
+    )
+    assert batch_res["status"] == "success"
+    assert batch_res["presentation_id"] == pres_id
+    assert batch_res["slides_added"] == 3
+    assert batch_res["total_slides"] == 4
+
+    save_ppt = await server.save_presentation(file_path=str(out_pptx))
+    assert save_ppt["status"] == "success"
+    assert out_pptx.exists()
+
+    # Verify saved PPTX structure: 16:9 widescreen, 4 slides, single bullets (no double "• •"), speaker notes preserved
+    reloaded = Presentation(str(out_pptx))
+    assert len(reloaded.slides) == 4
+    assert round(reloaded.slide_width.inches, 2) == 13.33
+    s1_body = "\n".join(sh.text for sh in reloaded.slides[1].shapes if sh.has_text_frame)
+    assert "Revenue grew 14.2% YoY" in s1_body
+    assert "• Revenue" not in s1_body  # leading bullet glyph stripped cleanly
+    assert "Reconciled verbatim" in reloaded.slides[1].notes_slide.notes_text_frame.text
+
+
+def test_imp006_modular_facade_parity():
+    """Verify IMP-006: ExcelController & AppleScriptBridge compose modular domain mixins cleanly behind 100%-compatible facades."""
+    from controllers.excel import (
+        ExcelChartsTablesMixin,
+        ExcelFormatterMixin,
+        ExcelIOMixin,
+        ExcelReaderMixin,
+        ExcelWriterMixin,
+    )
+    from controllers.excel_controller import (
+        ExcelController,
+        _NAMED_CELL_STYLE_PRESETS,
+        _TABLE_STYLE_RE,
+    )
+    from integrations.applescript import (
+        AppleScriptBaseMixin,
+        AppleScriptExcelCoreMixin,
+        AppleScriptExcelIOMixin,
+        AppleScriptPowerPointMixin,
+        AppleScriptWordMixin,
+    )
+    from integrations.applescript_bridge import (
+        AppleScriptBridge,
+        AppleScriptTimeoutError,
+        _FS,
+        _GS,
+        _RS,
+        _US,
+    )
+
+    for mixin in (ExcelIOMixin, ExcelReaderMixin, ExcelWriterMixin, ExcelChartsTablesMixin, ExcelFormatterMixin):
+        assert issubclass(ExcelController, mixin)
+    assert "Good" in _NAMED_CELL_STYLE_PRESETS
+    assert _TABLE_STYLE_RE.match("TableStyleMedium9")
+
+    for mixin in (
+        AppleScriptWordMixin,
+        AppleScriptExcelCoreMixin,
+        AppleScriptExcelIOMixin,
+        AppleScriptPowerPointMixin,
+        AppleScriptBaseMixin,
+    ):
+        assert issubclass(AppleScriptBridge, mixin)
+    assert issubclass(AppleScriptTimeoutError, TimeoutError)
+    assert (_US, _RS, _GS, _FS) == ("\x1f", "\x1e", "\x1d", "\x1c")
+
+
+@pytest.mark.asyncio
+async def test_imp008_background_mode_focus_protection(tmp_path, monkeypatch):
+    """Verify IMP-008: M365_MCP_BACKGROUND_MODE (default no_focus, strict, off) suppresses OS focus stealing and protects same-app user windows."""
+    import asyncio
+    from integrations.applescript_bridge import AppleScriptBridge
+    from utils.validators import get_background_mode, set_client_project_dir
+
+    # 1. Default & env-var parsing (including aliases)
+    monkeypatch.delenv("M365_MCP_BACKGROUND_MODE", raising=False)
+    monkeypatch.delenv("OFFICE_MCP_BACKGROUND_MODE", raising=False)
+    assert get_background_mode() == "no_focus"
+
+    for raw, expected in [
+        ("no_focus", "no_focus"),
+        ("NO_FOCUS", "no_focus"),
+        ("on", "no_focus"),
+        ("true", "no_focus"),
+        ("strict", "strict"),
+        ("HIDDEN", "strict"),
+        ("off", "off"),
+        ("false", "off"),
+        ("0", "off"),
+        ("invalid_garbage", "no_focus"),
+    ]:
+        monkeypatch.setenv("M365_MCP_BACKGROUND_MODE", raw)
+        assert get_background_mode() == expected
+
+    # 2. check_office_status surfaces background_mode & available_background_modes
+    monkeypatch.setenv("M365_MCP_BACKGROUND_MODE", "no_focus")
+    st = await server.check_office_status()
+    assert st["profile"]["background_mode"] == "no_focus"
+    assert st["profile"]["available_background_modes"] == ["no_focus", "strict", "off"]
+
+    # 3. LaunchServices passes `-g -j` in no_focus/strict even when activate=True, and honors activate=True only in off
+    bridge = AppleScriptBridge()
+    spawned_cmds = []
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_subproc(*cmd, **kwargs):
+        spawned_cmds.append(list(cmd))
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subproc)
+    dummy_xlsx = tmp_path / "dummy.xlsx"
+    dummy_xlsx.write_bytes(b"PK")
+
+    monkeypatch.setenv("M365_MCP_BACKGROUND_MODE", "no_focus")
+    await bridge._open_via_launchservices("Microsoft Excel", dummy_xlsx, activate=True)
+    assert spawned_cmds[-1][:4] == ["/usr/bin/open", "-g", "-j", "-a"]
+
+    monkeypatch.setenv("M365_MCP_BACKGROUND_MODE", "strict")
+    await bridge._open_via_launchservices("Microsoft Excel", dummy_xlsx, activate=True)
+    assert spawned_cmds[-1][:4] == ["/usr/bin/open", "-g", "-j", "-a"]
+
+    monkeypatch.setenv("M365_MCP_BACKGROUND_MODE", "off")
+    await bridge._open_via_launchservices("Microsoft Excel", dummy_xlsx, activate=True)
+    assert spawned_cmds[-1][:2] == ["/usr/bin/open", "-a"]
+    await bridge._open_via_launchservices("Microsoft Excel", dummy_xlsx, activate=False)
+    assert spawned_cmds[-1][:3] == ["/usr/bin/open", "-g", "-a"]
+
+    # 4. launch_excel / launch_word / launch_powerpoint suppress `activate` when mode != off
+    recorded = []
+
+    async def fake_exec(script, args=None, timeout=30.0):
+        recorded.append((script, list(args) if args else []))
+        if "open workbook" in script or "make new workbook" in script:
+            return "dummy.xlsx\x1fSheet1"
+        if "open file name" in script or "make new document" in script:
+            return "dummy.docx"
+        return "Sheet1"
+
+    monkeypatch.setattr(bridge, "execute_applescript", fake_exec)
+    monkeypatch.setattr(bridge, "find_open_excel_workbook_by_path", lambda *a, **kw: asyncio.sleep(0, result=None))
+    monkeypatch.setattr(bridge, "is_app_running", lambda *a, **kw: asyncio.sleep(0, result=False))
+
+    monkeypatch.setenv("M365_MCP_BACKGROUND_MODE", "no_focus")
+    await bridge.launch_excel(activate=True)
+    await bridge.launch_word(activate=True)
+    await bridge.launch_powerpoint(activate=True)
+    assert all("to launch" in s and "to activate" not in s for s, _ in recorded[-3:])
+
+    # 5. open_excel_file, create_excel_workbook, open_word_file, create_word_document, open_powerpoint_file
+    #    force shouldActivate="false", pass bg_mode, and include window-isolation + prevFront restoration
+    set_client_project_dir(None)
+    dummy_docx = tmp_path / "dummy.docx"
+    dummy_docx.write_bytes(b"PK")
+    dummy_pptx = tmp_path / "dummy.pptx"
+    dummy_pptx.write_bytes(b"PK")
+
+    recorded.clear()
+    res_ex = await bridge.open_excel_file(str(dummy_xlsx), activate=True)
+    assert res_ex["background_mode"] == "no_focus"
+    assert recorded[-1][1][2] == "false"  # shouldActivate suppressed
+    assert recorded[-1][1][3] == "no_focus"
+    assert "set collapsed of (window 1 of wb) to true" in recorded[-1][0]
+    assert "wasFrontmost and prevFront" in recorded[-1][0]
+    assert "set screen updating to false" in recorded[-1][0]
+    assert 'set visible of process "Microsoft Excel" to false' in recorded[-1][0]
+
+    res_ex_new = await bridge.create_excel_workbook(activate=True)
+    assert res_ex_new["background_mode"] == "no_focus"
+    assert recorded[-1][1] == ["false", "no_focus"]
+
+    monkeypatch.setenv("M365_MCP_BACKGROUND_MODE", "strict")
+    res_wd = await bridge.open_word_file(str(dummy_docx), activate=True)
+    assert res_wd["background_mode"] == "strict"
+    assert recorded[-1][1][2] == "false"
+    assert recorded[-1][1][3] == "strict"
+    assert "set visible of targetWin to false" in recorded[-1][0]
+    assert "if wasFrontmost and prevFront" in recorded[-1][0]
+    assert 'set visible of process "Microsoft Word" to false' in recorded[-1][0]
+
+    res_wd_new = await bridge.create_word_document(title="Test", activate=True)
+    assert res_wd_new["background_mode"] == "strict"
+    assert recorded[-1][1] == ["Test", "false", "strict"]
+
+    await bridge.open_powerpoint_file(str(dummy_pptx), activate=True)
+    assert recorded[-1][1][1] == "false"
+    assert recorded[-1][1][2] == "strict"
+    assert "set frontmost of process prevFrontApp to true" in recorded[-1][0]
+
+    # 5B. Verify view-state restore, worksheet activation, add worksheet, and PDF saves never un-minimize or steal focus
+    monkeypatch.setenv("M365_MCP_BACKGROUND_MODE", "no_focus")
+    recorded.clear()
+    await bridge.activate_live_excel_worksheet("Summary", workbook_name="dummy.xlsx")
+    assert "set screen updating to false" in recorded[-1][0]
+    assert "set frontmost of process prevFrontApp to true" in recorded[-1][0]
+
+    await bridge.add_live_excel_worksheet("Notes", workbook_name="dummy.xlsx")
+    assert "set screen updating to false" in recorded[-1][0]
+    assert "set collapsed of wTarget to true" in recorded[-1][0]
+
+    await bridge.restore_excel_workbook_view_state(
+        "dummy.xlsx",
+        {"active_sheet": "Summary", "bounds": [0, 25, 1920, 1080], "zoom": 100, "collapsed": True, "visible": True},
+    )
+    assert "set keepIsolated to" in recorded[-1][0]
+    assert "if (not keepIsolated) and bStr" in recorded[-1][0]
+    assert "if (not keepIsolated) and selAddr" in recorded[-1][0]
+    assert recorded[-1][1][7:10] == ["no_focus", "true", "true"]
+
+    await bridge.save_excel_workbook(workbook_name="dummy.xlsx", file_path=str(tmp_path / "out.pdf"), file_format="pdf")
+    assert "set frontmost of process prevFrontApp to true" in recorded[-1][0]
+
+    await bridge.save_word_document(document_name="dummy.docx", file_path=str(tmp_path / "out.pdf"), file_format="pdf")
+    assert "set frontmost of process prevFrontApp to true" in recorded[-1][0]
+
+    # 5C. Verify live Excel cell/range/batch writes wrap atomically in screen updating = false + enable events = false
+    recorded.clear()
+    await bridge.write_live_excel_cell("B2", 123, sheet_name="Summary", workbook_name="dummy.xlsx")
+    assert "set screen updating to false" in recorded[-1][0]
+    assert "set enable events to false" in recorded[-1][0]
+    assert "set enable events to prevEvents" in recorded[-1][0]
+
+    await bridge.write_live_excel_range("A1", [[1, 2]], sheet_name="Summary", workbook_name="dummy.xlsx")
+    assert "set screen updating to false" in recorded[-1][0]
+    assert "set enable events to false" in recorded[-1][0]
+
+    await bridge.batch_write_live_excel_cells({"B2": 456}, sheet_name="Summary", workbook_name="dummy.xlsx")
+    assert "set screen updating to false" in recorded[-1][0]
+    assert "set enable events to false" in recorded[-1][0]
+
+    # 6. Legacy `off` mode honors activate=True again
+    monkeypatch.setenv("M365_MCP_BACKGROUND_MODE", "off")
+    recorded.clear()
+    await bridge.launch_excel(activate=True)
+    assert "to activate" in recorded[-1][0]
+    res_ex_off = await bridge.open_excel_file(str(dummy_xlsx), activate=True)
+    assert res_ex_off["background_mode"] == "off"
+    assert recorded[-1][1][2] == "true"
+    assert recorded[-1][1][3] == "off"
+
+
+@pytest.mark.asyncio
+async def test_audit_fixes_sdk_v2_hook_ghost_rows_optional_ids_and_context_caps(tmp_path, monkeypatch):
+    """Verify full-codebase audit fixes: SDK v2 _M365MCPServer hook, all 14 extended Excel optional workbook_id,
+    ghost 1,048,576-row sparse auto_fit/format/audit, and context-window payload caps across Word & Excel."""
+    import time
+    from openpyxl import Workbook
+    from controllers.excel_controller import ExcelController
+    from controllers.word_controller import WordController
+    from integrations.applescript_bridge import AppleScriptBridge
+
+    # 1. MCP SDK v2 _M365MCPServer subclass overrides _handle_call_tool at class level
+    assert isinstance(server.mcp, server._M365MCPServer)
+    assert "_handle_call_tool" in server._M365MCPServer.__dict__
+
+    # 2. ZERO registered tools require workbook_id, document_id, presentation_id, or slide_id
+    tm = server.mcp._tool_manager
+    for t in tm.list_tools():
+        req = (t.parameters or {}).get("required", [])
+        assert not [r for r in req if r.endswith("_id")], f"{t.name} still requires ID param: {req}"
+
+    # 3. Ghost 1,048,576-row sheet: _compute_auto_fit_widths, column-only 'B:C' format bounds, and audit_workbook_formulas wb_eval
+    ghost_xlsx = tmp_path / "ghost_audit.xlsx"
+    wb_g = Workbook()
+    ws_g = wb_g.active
+    ws_g.title = "ERP"
+    ws_g["A1"] = "Metric"
+    ws_g["B1"] = "FY25"
+    ws_g["A2"] = "Revenue"
+    ws_g["B2"] = 1000
+    ws_g["A3"] = "Total"
+    ws_g["B3"] = "=B2*2"
+    wb_g.save(ghost_xlsx)
+
+    ec = ExcelController()
+    meta = await ec.open_workbook(str(ghost_xlsx))
+    wb_id = meta["workbook_id"]
+    ws_mem = ec.active_workbooks[wb_id]["workbook_object"]["ERP"]
+    # Simulate a ghost empty formatted cell at row 1,048,576 (classic ERP export bug)
+    ws_mem.cell(row=1_048_576, column=2).number_format = "#,##0"
+    assert ws_mem.max_row == 1_048_576
+
+    t0 = time.perf_counter()
+    widths = ec._compute_auto_fit_widths(ws_mem)
+    _, _, _, max_r_bound, norm_ref = ec._resolve_format_bounds(ws_mem, "B:B")
+    aud = await ec.audit_workbook_formulas(workbook_id=wb_id)
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    assert elapsed_ms < 500.0, f"Ghost-row operations took {elapsed_ms:.1f}ms (expected <500ms)"
+    assert "A" in widths and "B" in widths
+    assert max_r_bound == 3 and norm_ref == "B1:B3"
+    assert aud["total_formulas"] == 1
+    await ec.close_workbook(wb_id)
+
+    # 4. Context-window payload caps:
+    # 4a. read_range default 150x30 + pagination_hint
+    big_meta = await ec.create_workbook("BigRange", sheet_names=["Data"])
+    big_id = big_meta["workbook_id"]
+    ws_big = ec.active_workbooks[big_id]["workbook_object"]["Data"]
+    for r in range(1, 181):
+        ws_big.cell(row=r, column=1, value=f"R{r}")
+        ws_big.cell(row=r, column=2, value=r)
+    rng_res = await ec.read_range(big_id, "Data")
+    assert rng_res["rows"] == 150
+    assert rng_res["truncated"] is True
+    assert rng_res["total_rows"] == 180
+    assert "A151" in rng_res["pagination_hint"]
+
+    # 4b. read_tables capped at max_rows_per_table
+    await ec.add_table(big_id, "Data", "BigTbl", "A1:B180")
+    tbl_res = await ec.read_tables(big_id, "Data", max_rows_per_table=25)
+    assert tbl_res["tables"][0]["row_count"] == 179
+    assert tbl_res["tables"][0]["returned_rows"] == 25
+    assert tbl_res["tables"][0]["truncated"] is True
+
+    # 4c. audit_workbook_formulas caps error_cells at 50 while reporting exact error_count
+    for r in range(1, 66):
+        ws_big.cell(row=r, column=3, value="=1/0")
+        ws_big.cell(row=r, column=4, value="#REF!")
+    aud_big = await ec.audit_workbook_formulas(workbook_id=big_id)
+    assert aud_big["error_count"] >= 65
+    assert len(aud_big["error_cells"]) == 50
+    assert aud_big["error_cells_truncated"] is True
+    await ec.close_workbook(big_id)
+
+    # 4d. inspect_workbook auto-scales to 15 rows/sheet when >6 sheets unfiltered
+    many_meta = await ec.create_workbook("ManyTabs", sheet_names=[f"Tab{i}" for i in range(1, 9)])
+    many_id = many_meta["workbook_id"]
+    ws_t1 = ec.active_workbooks[many_id]["workbook_object"]["Tab1"]
+    for r in range(1, 31):
+        ws_t1.cell(row=r, column=1, value=f"Row {r}")
+    insp_many = await ec.inspect_workbook(workbook_id=many_id)
+    assert len(insp_many["sheets"][0]["values"]) == 15
+    assert "preview_note" in insp_many
+    await ec.close_workbook(many_id)
+
+    # 4e. Word read_document pagination + table row cap
+    wc = WordController()
+    d_meta = await wc.create_document("LongDoc")
+    d_id = d_meta["document_id"]
+    for i in range(12):
+        await wc.add_paragraph(d_id, f"Para {i}")
+    r_p1 = await wc.read_document(d_id, max_paragraphs=5, start_paragraph=0)
+    assert r_p1["paragraph_count"] == 12
+    assert len(r_p1["paragraphs"]) == 5
+    assert r_p1["truncated"] is True
+    assert "start_paragraph=5" in r_p1["pagination_hint"]
+    r_p2 = await wc.read_document(d_id, max_paragraphs=5, start_paragraph=5)
+    assert r_p2["paragraphs"][0]["index"] == 5
+    await wc.close_document(d_id)
+
+    # 4f. Live Word read omits duplicate `text` by default & paginates cleanly
+    bridge = AppleScriptBridge()
+    fake_paras = "\r".join(f"Line {i}" for i in range(30))
+    fake_raw = f"Memo.docx\x1f/tmp/Memo.docx\x1ftrue\x1f0\x1f0\x1f\x1d{fake_paras}\x1d"
+    monkeypatch.setattr(bridge, "execute_applescript", lambda *a, **kw: __import__("asyncio").sleep(0, result=fake_raw))
+    live_w = await bridge.read_live_word_document(max_paragraphs=10, start_paragraph=0)
+    assert "text" not in live_w  # no 2x duplication by default!
+    assert live_w["paragraph_count"] == 30
+    assert len(live_w["paragraphs"]) == 10
+    assert live_w["truncated"] is True
+    live_w_full = await bridge.read_live_word_document(include_full_text=True, max_paragraphs=10)
+    assert "Line 0" in live_w_full["text"]
+
+    # 4g. Live Excel read trims trailing empty rows/cols & caps >3000 cells
+    trimmed, _, trunc_small, _ = bridge._trim_and_cap_live_grid(
+        [["A", "B", "", ""], ["1", "2", "", ""], ["", "", "", ""]], None
+    )
+    assert trimmed == [["A", "B"], ["1", "2"]] and trunc_small is False
+    big_live = [["x"] * 10 for _ in range(400)]  # 4,000 cells
+    capped, _, trunc_big, orig_r = bridge._trim_and_cap_live_grid(big_live, None, max_cells=3000)
+    assert trunc_big is True and orig_r == 400 and len(capped) == 300
+
+
+def test_mcp_sdk_v2_connection_scoped_session_key():
+    """Verify _M365MCPServer._extract_session_key stays stable across per-request ServerSession wrappers."""
+    import m365_mac_mcp_server as srv
+
+    class FakeConn:
+        pass
+
+    class FakeSessionV2:
+        def __init__(self, conn):
+            self._connection = conn
+
+    class FakeSessionV1:
+        pass
+
+    class FakeCtx:
+        def __init__(self, session):
+            self.session = session
+
+    conn_a = FakeConn()
+    conn_b = FakeConn()
+    k1 = srv._M365MCPServer._extract_session_key(FakeCtx(FakeSessionV2(conn_a)))
+    k2 = srv._M365MCPServer._extract_session_key(FakeCtx(FakeSessionV2(conn_a)))
+    k3 = srv._M365MCPServer._extract_session_key(FakeCtx(FakeSessionV2(conn_b)))
+    assert k1 is not None and k1 == k2, "Same connection must share one session key across requests"
+    assert k1 != k3, "Distinct connections must remain isolated"
+
+    s_v1 = FakeSessionV1()
+    assert srv._M365MCPServer._extract_session_key(FakeCtx(s_v1)) == f"mcp_session_{id(s_v1)}"
+    assert srv._M365MCPServer._extract_session_key(FakeCtx(None)) is None
+
+
+@pytest.mark.asyncio
+async def test_phase1_formula_and_linter_guards(tmp_path):
+    """Verify missing '=' formula auto-repair, save_workbook formula linters, and Word add_table shape inference."""
+    from controllers.excel_controller import ExcelController
+    from controllers.word_controller import WordController
+
+    ec = ExcelController()
+    wb_res = await ec.create_workbook(title="GuardTest", sheet_names=["Assumptions", "Calc", "Sens"])
+    wid = wb_res["workbook_id"]
+
+    # 1. Missing '=' auto-repair for unambiguous Excel formula strings (without touching plain prose)
+    await ec.batch_write_ranges(wid, [
+        {"sheet_name": "Assumptions", "range": "A1:B2", "data": [["Param", "Value"], ["CapEx", 25000000]]},
+        {"sheet_name": "Calc", "range": "A1:C4", "data": [
+            ["Line", "Year 0", "Year 1"],
+            ["CapEx", 0, "=$B$2/Assumptions!$B$2"],
+            ["Disc", 1, "=1/(1+0.1)^C$1"],
+            ["Payback", "IF(MAX(B2:C2)<0,\">6 yrs\",COUNTIF(B2:C2,\"<0\"))", "IF(not a formula) plain prose"],
+        ]},
+        {"sheet_name": "Sens", "range": "A1:C2", "data": [
+            ["Scale", 0.1, None],
+            [1.0, "=NPV(B$1,Calc!$C$2:$C$2)", "=NPV(C$1,Calc!$C$2:$C$2)"],
+        ]},
+    ])
+    wb_obj = ec.active_workbooks[wid]["workbook_object"]
+    assert wb_obj["Calc"]["B4"].value.startswith("=IF(")
+    assert wb_obj["Calc"]["C4"].value == "IF(not a formula) plain prose"
+
+    # 2. save_workbook compile-time linter catches all 3 subtle formula bugs
+    out_xlsx = tmp_path / "guard_test.xlsx"
+    save_res = await ec.save_workbook(wid, str(out_xlsx))
+    warns = " | ".join(save_res.get("sanity_warnings") or [])
+    assert "missing 'Assumptions!' prefix" in warns, f"Expected bare $B$2 warning, got: {warns}"
+    assert "references text 'Year 1'" in warns, f"Expected text exponent warning, got: {warns}"
+    assert "NPV rate C1 is blank" in warns, f"Expected blank NPV rate warning, got: {warns}"
+    await ec.close_workbook(wid)
+
+    # 3. WordController.add_table infers rows/columns from data when omitted
+    wc = WordController()
+    d = await wc.create_document(title="TblTest")
+    t_res = await wc.add_table(document_id=d["document_id"], data=[["A", "B"], ["1", "2"], ["3", "4"]])
+    assert t_res["rows"] == 3 and t_res["columns"] == 2
+    await wc.close_document(d["document_id"])
+
+    # 4. batch_write_ranges rejects range-as-fill_formula and combined data+fill_formula atomically
+    wb2 = await ec.create_workbook(title="FillRejectTest", sheet_names=["CF"])
+    wid2 = wb2["workbook_id"]
+    with pytest.raises(ValueError, match="NOT a cell range"):
+        await ec.batch_write_ranges(wid2, [
+            {"sheet_name": "CF", "range": "A8:H8", "data": [["OpEx", 0, "=C7-C9"]], "fill_formula": "D8:H8"}
+        ])
+    with pytest.raises(ValueError, match="SEPARATE operations"):
+        await ec.batch_write_ranges(wid2, [
+            {"sheet_name": "CF", "range": "A8:H8", "data": [["OpEx", 0]], "fill_formula": "=C7-C9"}
+        ])
+    # Verify atomic rejection left sheet untouched
+    assert ec.active_workbooks[wid2]["workbook_object"]["CF"]["A8"].value is None
+    # 5. write_cell reports value_type='formula' (not 'str') and cell_map formats formulas cleanly without truncation
+    wc_fml = await ec.write_cell(wid2, "CF", "B2", "=1+1")
+    assert wc_fml["value_type"] == "formula"
+    bw_map = await ec.batch_write_ranges(wid2, [
+        {"sheet_name": "CF", "range": "A1:B3", "data": [
+            ["KPI", "Value"],
+            ["NPV", "=NPV(0.1,C1:H1)+B1"],
+            ["IRR", "=IRR(B1:H1)"],
+        ]}
+    ], allow_formula_overwrite=True)
+    cmap = bw_map["results"][0].get("cell_map") or {}
+    assert cmap.get("B2") == "NPV: <formula>"
+    assert cmap.get("B3") == "IRR: <formula>"
+    await ec.close_workbook(wid2)
+
+
+@pytest.mark.asyncio
+async def test_phase2_dcf_formatting_cellmap_and_linters(tmp_path):
+    """Verify parenthetical EV/Share Price formatting, bare sheet-link '=' repair, 60-row cell_map, and DCF linters."""
+    from controllers.excel_controller import ExcelController
+
+    ec = ExcelController()
+    wb = await ec.create_workbook(
+        title="DCFGuard",
+        sheet_names=["Dashboard", "Assumptions", "Sensitivity"],
+        header_metadata={"entity": "Apex", "period": "Y1-Y5", "currency": "USD", "magnitude": "auto"},
+    )
+    wid = wb["workbook_id"]
+
+    # 1. Bare sheet-link missing '=' ('-Assumptions!$B$7') auto-repairs to '=-Assumptions!$B$7'
+    # 2. 35-row Assumptions table (>30 rows) still returns cell_map
+    assump_rows = [["Input", "Value"], ["Revenue ($M)", 120], ["Financial Debt ($M)", 120]] + [
+        [f"Driver {i}", 0.05] for i in range(32)
+    ] + [["Diluted Shares", 50000000]]
+    bw = await ec.batch_write_ranges(wid, [
+        {"sheet_name": "Assumptions", "range": f"A6:B{5 + len(assump_rows)}", "data": assump_rows},
+        {"sheet_name": "Dashboard", "range": "A6:B11", "data": [
+            ["Metric", "Value"],
+            ["Enterprise Value (Gordon Growth)", "=Assumptions!$B$7*10"],
+            ["Equity Value (Exit Multiple)", "=Assumptions!$B$7*8"],
+            ["Share Price (Gordon Growth)", "=Assumptions!$B$7/5"],
+            ["Less: Financial Debt", "-Assumptions!$B$8"],
+            ["WACC", 0.09],
+        ]},
+        {"sheet_name": "Sensitivity", "range": "A6:C8", "data": [
+            ["WACC / g", 0.02, 0.03],
+            [0.08, 10, 12],
+            [0.09, 9, 11],
+        ]},
+    ])
+    assert bw["results"][0].get("cell_map") is not None and "B7" in bw["results"][0]["cell_map"]
+    wb_obj = ec.active_workbooks[wid]["workbook_object"]
+    assert wb_obj["Dashboard"]["B10"].value == "=-Assumptions!$B$8"
+
+    # 3. Parenthetical '(Gordon Growth)' and '(Exit Multiple)' do NOT override currency/per-share formats
+    await ec.batch_format_workbook(wid, operations=[{"auto_color_financial_model": True, "auto_fit_columns": True}])
+    assert "%" not in wb_obj["Dashboard"]["B7"].number_format, f"EV got pct: {wb_obj['Dashboard']['B7'].number_format}"
+    assert "x" not in wb_obj["Dashboard"]["B8"].number_format, f"Equity got mult: {wb_obj['Dashboard']['B8'].number_format}"
+    assert "$#,##0.00" in wb_obj["Dashboard"]["B9"].number_format, f"Share Price format wrong: {wb_obj['Dashboard']['B9'].number_format}"
+    assert wb_obj["Dashboard"]["B11"].number_format == "0.0%"
+
+    # 4. save_workbook warns on 0-formula Sensitivity sheet AND Exact-Shares vs $M mismatch
+    sv = await ec.save_workbook(wid, str(tmp_path / "dcf_guard.xlsx"))
+    warns = " | ".join(sv.get("sanity_warnings") or [])
+    assert "Sensitivity" in warns and "0 formulas" in warns
+    assert "Magnitude mismatch" in warns and "50,000,000" in warns
+    await ec.close_workbook(wid)
+
+
+@pytest.mark.asyncio
+async def test_imp010_mandatory_playbook_and_workbook_progress():
+    """Verify check_office_status wraps skill_playbook in <mandatory_playbook> and batch_write_ranges returns workbook_progress."""
+    st = await server.check_office_status(skill_name="capex-project-analyzer")
+    _assert_strict_json(st)
+    assert st["status"] == "running"
+    sp = st["loaded_skill"]
+    assert sp["name"] == "capex-project-analyzer"
+    assert sp["content"].startswith('<mandatory_playbook name="capex-project-analyzer"')
+    assert sp["content"].endswith("</mandatory_playbook>")
+    assert "precedence_rule" in sp and "strictly override" in sp["precedence_rule"]
+
+    wb = await server.create_workbook(
+        title="ProgressCheck",
+        sheet_names=["Executive Summary", "Assumptions", "Project Cash Flows", "Sensitivity & Charts"],
+    )
+    wid = wb["workbook_id"]
+    bw = await server.batch_write_ranges(
+        wid,
+        operations=[
+            {
+                "sheet_name": "Assumptions",
+                "range": "A1:B3",
+                "data": [["Parameter", "Value"], ["CapEx", 25000000], ["WACC", 0.10]],
+            }
+        ],
+    )
+    _assert_strict_json(bw)
+    prog = bw.get("workbook_progress")
+    assert isinstance(prog, dict)
+    assert prog["Executive Summary"] == "empty"
+    assert "cells" in prog["Assumptions"]
+    assert prog["Project Cash Flows"] == "empty"
+    assert prog["Sensitivity & Charts"] == "empty"
+    await server.close_workbook(wid)
+
+
+
+
+
+
+

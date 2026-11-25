@@ -1,10 +1,10 @@
 ---
 name: live-what-if-runner
-version: 2.3.1A
-description: "[v2.3.1A] Run non-destructive live Excel sensitivity stress tests with native recalculation and automatic baseline revert."
+version: 2.3.1C
+description: "[v2.3.1C] Run non-destructive live Excel sensitivity stress tests with native recalculation and automatic baseline revert."
 ---
 
-# Live Excel What-If & Sensitivity Runner (v2.3.1A)
+# Live Excel What-If & Sensitivity Runner (v2.3.1C)
 
 ## 1. Trigger & Scope
 - **Triggers:** *"Run a ±10% Revenue stress test"*, *"Test WACC ±100 bps live in Excel without saving"*, *"Check live 3-statement sensitivity."*
@@ -16,8 +16,8 @@ Confirm (ask concisely only if missing):
 - Driver input cell(s) and shock values/percentages (e.g., `Income Statement!F2` ±10%).
 - Output KPI cells to track (always include `Balance Check` if a 3-statement model).
 
-## 3. Exact m365-mac-mcp Tool Sequence
-1. **Locate / Open Live:** Call `excel_live_list_workbooks()` or `excel_live_open(file_path=..., activate=True)`.
+## 3. Exact Office MCP Tool Sequence
+1. **Locate / Open Live:** Call `excel_live_list_workbooks()` or `excel_live_open(file_path=...)` (opens silently in the background under `M365_MCP_BACKGROUND_MODE=no_focus` without interrupting your active window).
 2. **Capture Baseline (1 Call):** Call `excel_live_batch_read_ranges(workbook_name=..., ranges=[...], include_formulas=True)` covering all driver cells (verifying they are inputs, not formulas) and all output KPI cells.
 3. **Run Each Scenario:**
    - Apply shock via `excel_live_write_cell(..., recalculate=True)` or `excel_live_batch_write_cells(..., recalculate=True)`.

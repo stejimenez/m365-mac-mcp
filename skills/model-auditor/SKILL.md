@@ -1,10 +1,10 @@
 ---
 name: model-auditor
-version: 2.3.1B
-description: "[v2.3.1B] Read-only SOX, IFRS, and FASB audit of Excel models for formula errors, silent wrong-period logic bugs, broken links, hardcoded totals, and balance breaks."
+version: 2.3.1C
+description: "[v2.3.1C] Read-only SOX, IFRS, and FASB audit of Excel models for formula errors, silent wrong-period logic bugs, broken links, hardcoded totals, and balance breaks."
 ---
 
-# Financial Model Auditor (IFRS / FASB / SOX) (v2.3.1B)
+# Financial Model Auditor (IFRS / FASB / SOX) (v2.3.1C)
 
 ## 1. Trigger & Scope
 - **Triggers:** *"Audit this model"*, *"Check for formula errors or hardcoded totals"*, *"Run a SOX/IFRS/GAAP review."*
@@ -14,7 +14,7 @@ description: "[v2.3.1B] Read-only SOX, IFRS, and FASB audit of Excel models for 
 - Target workbook path — if user says *"my open workbook"*, call `excel_live_list_workbooks()` to resolve the path automatically.
 - Reporting framework (**IFRS** vs. **FASB / US GAAP**): if unstated, proceed immediately and flag framework-sensitive items (`IAS 7` vs. `ASC 230`, `IFRS 16` vs. `ASC 842`) without halting.
 
-## 3. Exact m365-mac-mcp Tool Sequence
+## 3. Exact Office MCP Tool Sequence
 1. **Automated Formula, Link & R1C1 Logic Audit:** Call `audit_workbook_formulas(file_path=...)` to deterministically detect:
    - Excel errors (`#REF!`, `#NAME?`, `#VALUE!`, `#DIV/0!`, `#N/A`, `#NUM!`, `#NULL!`), external `[...]` links, broken/unquoted sheet refs, and suspicious literals in formula rows.
    - **Silent Financial-Logic Errors (`row_inconsistencies`):** R1C1 row-pattern breaks where a cell returns a valid number yet references the wrong month/period (includes exact `formula` vs. `expected_formula`).

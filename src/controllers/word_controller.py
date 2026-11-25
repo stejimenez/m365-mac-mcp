@@ -30,6 +30,7 @@ from utils.config import open_office_template, resolve_template_path
 from utils.logger import setup_logger
 from utils.validators import (
     assert_safe_write_path,
+    atomic_save_via_temp,
     get_client_project_dir,
     is_within_trusted_project_dir,
     resolve_file_path,
@@ -62,10 +63,18 @@ class WordController:
             self._owned_temp_files.discard(path)
 
     def _evict_if_needed(self) -> None:
-        """Keep active document count bounded to prevent unbounded memory growth."""
+        """Keep active document count bounded, preferring clean (non-dirty) documents first."""
         while len(self.active_documents) >= self.max_documents:
-            oldest_id = next(iter(self.active_documents))
-            entry = self.active_documents.pop(oldest_id)
+            evict_id = next(
+                (did for did, entry in self.active_documents.items() if not entry.get("dirty")),
+                None,
+            )
+            if evict_id is None:
+                evict_id = next(iter(self.active_documents))
+                logger.warning(
+                    f"Evicting dirty in-memory Word document {evict_id} because all {self.max_documents} slots have unsaved edits."
+                )
+            entry = self.active_documents.pop(evict_id)
             temp_path = entry.get("temp_file")
             if temp_path and temp_path in self._owned_temp_files:
                 try:
@@ -74,18 +83,35 @@ class WordController:
                 except Exception:
                     pass
                 self._owned_temp_files.discard(temp_path)
-            logger.info(f"Evicted oldest in-memory document {oldest_id} to stay within limit ({self.max_documents})")
+            logger.info(f"Evicted in-memory Word document {evict_id} to stay within limit ({self.max_documents})")
 
-    def _get_entry(self, document_id: str) -> Dict[str, Any]:
-        if document_id not in self.active_documents:
-            raise ValueError(f"Document '{document_id}' not found. Open or create a document first.")
-        return self.active_documents[document_id]
+    def _resolve_document_id(self, document_id: Optional[str]) -> str:
+        """Resolve an optional document_id (auto-selects when exactly 1 document is active)."""
+        if document_id and str(document_id).strip():
+            did = str(document_id).strip()
+            if did not in self.active_documents:
+                raise ValueError(f"Document '{did}' not found. Open or create a document first.")
+            return did
+        if len(self.active_documents) == 1:
+            return next(iter(self.active_documents))
+        if len(self.active_documents) == 0:
+            raise ValueError("No active Word document found. Call create_document or open_document first.")
+        raise ValueError(
+            f"Multiple Word documents are active ({len(self.active_documents)}). Pass document_id explicitly."
+        )
 
-    async def _save_working_copy(self, entry: Dict[str, Any]) -> None:
-        """Persist working copy asynchronously without blocking the event loop."""
+    def _get_entry(self, document_id: Optional[str]) -> Dict[str, Any]:
+        resolved = self._resolve_document_id(document_id)
+        return self.active_documents[resolved]
+
+    async def _save_working_copy(self, entry: Dict[str, Any], force: bool = False) -> None:
+        """Mark document dirty and defer disk serialization until save_document/export (or force=True)."""
+        if not force:
+            entry["dirty"] = True
+            return
         doc = entry["docx_object"]
-        target = entry["working_path"]
-        await asyncio.to_thread(doc.save, str(target))
+        target = Path(entry["working_path"])
+        await asyncio.to_thread(atomic_save_via_temp, doc.save, target)
 
     # ------------------------------------------------------------------
     # Create / Open / Close
@@ -157,6 +183,7 @@ class WordController:
             "docx_object": doc,
             "working_path": temp_file,
             "temp_file": temp_file,
+            "dirty": False,
         }
         logger.info(f"Created Word document '{title}' ({document_id})")
         return sanitize_for_json(metadata)
@@ -209,20 +236,23 @@ class WordController:
             "docx_object": doc,
             "working_path": working_path,
             "temp_file": temp_file,
+            "dirty": False,
         }
         logger.info(f"Opened Word document '{resolved}' ({document_id})")
         return sanitize_for_json(metadata)
 
     async def close_document(
         self,
-        document_id: str,
+        document_id: Optional[str] = None,
         save_before_close: bool = False,
     ) -> Dict[str, Any]:
         """Close an in-memory Word document and clean up any temporary file."""
+        document_id = self._resolve_document_id(document_id)
         entry = self._get_entry(document_id)
         saved_path = None
         if save_before_close and not entry["metadata"].get("is_temporary", True):
-            await self._save_working_copy(entry)
+            await self._save_working_copy(entry, force=True)
+            entry["dirty"] = False
             saved_path = str(entry["working_path"])
 
         self.active_documents.pop(document_id, None)
@@ -248,18 +278,27 @@ class WordController:
 
     async def read_document(
         self,
-        document_id: str,
+        document_id: Optional[str] = None,
         include_tables: bool = True,
         include_styles: bool = False,
         include_metadata: bool = True,
         include_full_text: bool = False,
+        max_paragraphs: int = 200,
+        start_paragraph: int = 0,
     ) -> Dict[str, Any]:
-        """Read indexed paragraphs, tables, styles, and non-empty metadata from a Word document."""
+        """Read indexed paragraphs, tables, styles, and non-empty metadata from a Word document (paginated to protect context)."""
+        document_id = self._resolve_document_id(document_id)
         entry = self._get_entry(document_id)
         doc = entry["docx_object"]
 
+        total_paras = len(doc.paragraphs)
+        start_idx = max(0, int(start_paragraph))
+        para_cap = max(1, int(max_paragraphs))
+        end_idx = min(total_paras, start_idx + para_cap)
+
         paragraphs = []
-        for idx, para in enumerate(doc.paragraphs):
+        for idx in range(start_idx, end_idx):
+            para = doc.paragraphs[idx]
             style_name = para.style.name if para.style else "Normal"
             item: Dict[str, Any] = {
                 "index": idx,
@@ -269,29 +308,44 @@ class WordController:
                 item["style"] = style_name
             paragraphs.append(item)
 
+        truncated = end_idx < total_paras
         result: Dict[str, Any] = {
             "status": "success",
             "document_id": document_id,
             "file_path": entry["metadata"]["file_path"],
-            "paragraph_count": len(paragraphs),
+            "paragraph_count": total_paras,
             "paragraphs": paragraphs,
         }
+        if truncated or start_idx > 0:
+            result["returned_paragraphs"] = len(paragraphs)
+            result["start_paragraph"] = start_idx
+        if truncated:
+            result["truncated"] = True
+            result["pagination_hint"] = (
+                f"Showing paragraphs {start_idx}..{end_idx - 1} of {total_paras}. "
+                f"Pass start_paragraph={end_idx} to read the next slice."
+            )
         if include_full_text:
             result["full_text"] = "\n".join(p["text"] for p in paragraphs)
 
         if include_tables:
             tables = []
+            max_tbl_rows = 100
             for t_idx, table in enumerate(doc.tables):
+                total_t_rows = len(table.rows)
                 rows_data = [
                     [cell.text for cell in row.cells]
-                    for row in table.rows
+                    for row in table.rows[:max_tbl_rows]
                 ]
                 tbl_entry: Dict[str, Any] = {
                     "table_index": t_idx,
-                    "rows": len(table.rows),
+                    "rows": total_t_rows,
                     "columns": len(table.columns),
                     "data": rows_data,
                 }
+                if total_t_rows > max_tbl_rows:
+                    tbl_entry["truncated"] = True
+                    tbl_entry["returned_rows"] = len(rows_data)
                 if table.style and table.style.name:
                     tbl_entry["style"] = table.style.name
                 tables.append(tbl_entry)
@@ -328,13 +382,14 @@ class WordController:
 
     async def add_heading(
         self,
-        document_id: str,
-        text: str,
+        document_id: Optional[str] = None,
+        text: str = "",
         level: int = 1,
         style: Optional[str] = None,
         formatting: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Add a heading to a document with optional explicit formatting."""
+        document_id = self._resolve_document_id(document_id)
         entry = self._get_entry(document_id)
         doc = entry["docx_object"]
         clamped_level = max(0, min(9, int(level)))
@@ -364,12 +419,13 @@ class WordController:
 
     async def add_paragraph(
         self,
-        document_id: str,
-        text: str,
+        document_id: Optional[str] = None,
+        text: str = "",
         style: Optional[str] = None,
         formatting: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Append a formatted paragraph to a document."""
+        document_id = self._resolve_document_id(document_id)
         entry = self._get_entry(document_id)
         doc = entry["docx_object"]
 
@@ -397,13 +453,14 @@ class WordController:
 
     async def insert_paragraph(
         self,
-        document_id: str,
-        index: int,
-        text: str,
+        document_id: Optional[str] = None,
+        index: int = 0,
+        text: str = "",
         style: Optional[str] = None,
         formatting: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Insert a paragraph before the given 0-based paragraph index (or at end)."""
+        document_id = self._resolve_document_id(document_id)
         entry = self._get_entry(document_id)
         doc = entry["docx_object"]
 
@@ -436,15 +493,16 @@ class WordController:
 
     async def replace_text(
         self,
-        document_id: str,
-        find_text: str,
-        replace_text: str,
+        document_id: Optional[str] = None,
+        find_text: str = "",
+        replace_text: str = "",
         match_case: bool = True,
         include_tables: bool = True,
     ) -> Dict[str, Any]:
         """Replace occurrences of text across paragraphs and (optionally) tables."""
         if not find_text:
             raise ValueError("find_text cannot be empty")
+        document_id = self._resolve_document_id(document_id)
         entry = self._get_entry(document_id)
         doc = entry["docx_object"]
 
@@ -496,8 +554,9 @@ class WordController:
             "replacements": replacements,
         }
 
-    async def delete_paragraph(self, document_id: str, index: int) -> Dict[str, Any]:
+    async def delete_paragraph(self, document_id: Optional[str] = None, index: int = 0) -> Dict[str, Any]:
         """Delete a paragraph by its 0-based index."""
+        document_id = self._resolve_document_id(document_id)
         entry = self._get_entry(document_id)
         doc = entry["docx_object"]
 
@@ -524,12 +583,13 @@ class WordController:
 
     async def format_paragraph(
         self,
-        document_id: str,
-        index: int,
-        formatting: Dict[str, Any],
+        document_id: Optional[str] = None,
+        index: int = 0,
+        formatting: Optional[Dict[str, Any]] = None,
         style: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Apply explicit style and formatting to an existing paragraph by 0-based index."""
+        document_id = self._resolve_document_id(document_id)
         entry = self._get_entry(document_id)
         doc = entry["docx_object"]
 
@@ -558,13 +618,15 @@ class WordController:
 
     async def add_list(
         self,
-        document_id: str,
-        items: List[str],
+        document_id: Optional[str] = None,
+        items: Optional[List[str]] = None,
         list_type: str = "bullet",
         style: Optional[str] = None,
         formatting: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Add a bulleted or numbered list to a document."""
+        items = items or []
+        document_id = self._resolve_document_id(document_id)
         entry = self._get_entry(document_id)
         doc = entry["docx_object"]
 
@@ -591,9 +653,9 @@ class WordController:
 
     async def add_table(
         self,
-        document_id: str,
-        rows: int,
-        columns: int,
+        document_id: Optional[str] = None,
+        rows: int = 0,
+        columns: int = 0,
         data: Optional[List[List[Any]]] = None,
         style: Optional[str] = None,
         column_widths: Optional[List[float]] = None,
@@ -607,9 +669,15 @@ class WordController:
         column_alignments: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Add a table to a document and optionally populate and style it."""
+        if data:
+            if not rows or rows <= 0:
+                rows = len(data)
+            if not columns or columns <= 0:
+                columns = max((len(r) for r in data if isinstance(r, (list, tuple))), default=0)
         if rows <= 0 or columns <= 0:
             raise ValueError("rows and columns must be positive integers")
 
+        document_id = self._resolve_document_id(document_id)
         entry = self._get_entry(document_id)
         doc = entry["docx_object"]
 
@@ -667,8 +735,8 @@ class WordController:
 
     async def format_table(
         self,
-        document_id: str,
-        table_index: int,
+        document_id: Optional[str] = None,
+        table_index: int = 0,
         style: Optional[str] = None,
         column_widths: Optional[List[float]] = None,
         header_formatting: Optional[Dict[str, Any]] = None,
@@ -681,6 +749,7 @@ class WordController:
         column_alignments: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Apply explicit styling, shading, borders, padding, and column widths to an existing table."""
+        document_id = self._resolve_document_id(document_id)
         entry = self._get_entry(document_id)
         doc = entry["docx_object"]
 
@@ -718,14 +787,15 @@ class WordController:
 
     async def update_table_cell(
         self,
-        document_id: str,
-        table_index: int,
-        row: int,
-        column: int,
-        text: str,
+        document_id: Optional[str] = None,
+        table_index: int = 0,
+        row: int = 0,
+        column: int = 0,
+        text: str = "",
         formatting: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Update the text (and optional formatting) of a specific table cell (0-based indices)."""
+        document_id = self._resolve_document_id(document_id)
         entry = self._get_entry(document_id)
         doc = entry["docx_object"]
 
@@ -754,13 +824,14 @@ class WordController:
 
     async def set_document_properties(
         self,
-        document_id: str,
+        document_id: Optional[str] = None,
         title: Optional[str] = None,
         author: Optional[str] = None,
         subject: Optional[str] = None,
         comments: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Update document core metadata properties."""
+        document_id = self._resolve_document_id(document_id)
         entry = self._get_entry(document_id)
         cp = entry["docx_object"].core_properties
         if title is not None:
@@ -790,11 +861,12 @@ class WordController:
 
     async def save_document(
         self,
-        document_id: str,
+        document_id: Optional[str] = None,
         file_path: Optional[str] = None,
         format: str = "docx",
     ) -> Dict[str, Any]:
         """Save a Word document in-place or to a new path (.docx, .pdf, .rtf, .txt, .doc)."""
+        document_id = self._resolve_document_id(document_id)
         entry = self._get_entry(document_id)
         doc = entry["docx_object"]
         fmt = format.lower().lstrip(".")
@@ -813,10 +885,11 @@ class WordController:
         save_path.parent.mkdir(parents=True, exist_ok=True)
 
         if fmt == "docx":
-            await asyncio.to_thread(doc.save, str(save_path))
+            await asyncio.to_thread(atomic_save_via_temp, doc.save, save_path)
             entry["working_path"] = save_path
             entry["metadata"]["file_path"] = str(save_path)
             entry["metadata"]["is_temporary"] = False
+            entry["dirty"] = False
             logger.info(f"Saved Word document to {save_path}")
             out: Dict[str, Any] = {
                 "status": "success",
@@ -834,7 +907,7 @@ class WordController:
         if fmt in ("pdf", "rtf", "txt", "doc"):
             # Persist current docx first, then export cleanly via live Microsoft Word AppleScript.
             # NOTE: Microsoft Word 16.x rejects `save as` on read_only=True documents.
-            await self._save_working_copy(entry)
+            await self._save_working_copy(entry, force=True)
             export_staging: Optional[Path] = None
             source_for_export = Path(entry["working_path"])
             in_trusted_project = is_within_trusted_project_dir(save_path)
@@ -1159,7 +1232,8 @@ class WordController:
             if rgb_color is not None:
                 run.font.color.rgb = rgb_color
 
-    async def get_document_info(self, document_id: str) -> Dict[str, Any]:
+    async def get_document_info(self, document_id: Optional[str] = None) -> Dict[str, Any]:
+        document_id = self._resolve_document_id(document_id)
         entry = self._get_entry(document_id)
         return sanitize_for_json(entry["metadata"])
 

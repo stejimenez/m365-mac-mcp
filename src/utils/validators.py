@@ -3,10 +3,12 @@ Input validation, path resolution, and JSON serialization utilities
 for Microsoft 365 for Mac MCP (m365-mac-mcp).
 """
 
+import contextvars
 import datetime
 import math
 import os
 import re
+import tempfile
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -17,21 +19,62 @@ _RANGE_REF_RE = re.compile(
 )
 _MCP_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _ACTIVE_CLIENT_PROJECT_DIR: Optional[Path] = None
+_SESSION_ID_CTX: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "m365_mcp_session_id", default=None
+)
+_SESSION_PROJECT_DIRS: Dict[str, Optional[Path]] = {}
+_MAX_TRACKED_SESSIONS = 128
+
+
+def _is_path_inside(child: Path, parent: Path) -> bool:
+    try:
+        return child == parent or child.is_relative_to(parent)
+    except AttributeError:
+        return child == parent or str(child).startswith(str(parent) + "/")
 
 
 def _is_inside_project_root(resolved: Path) -> bool:
-    try:
-        return resolved == _MCP_PROJECT_ROOT or resolved.is_relative_to(_MCP_PROJECT_ROOT)
-    except AttributeError:
-        return resolved == _MCP_PROJECT_ROOT or str(resolved).startswith(str(_MCP_PROJECT_ROOT) + "/")
+    return _is_path_inside(resolved, _MCP_PROJECT_ROOT)
+
+
+def set_current_session_id(session_id: Optional[str]) -> contextvars.Token:
+    """Bind the active MCP session identifier for async-safe working_dir isolation."""
+    return _SESSION_ID_CTX.set(session_id)
+
+
+def reset_current_session_id(token: contextvars.Token) -> None:
+    """Restore the previous MCP session context token."""
+    _SESSION_ID_CTX.reset(token)
+
+
+def get_current_session_id() -> Optional[str]:
+    """Return the active MCP session identifier, or None outside an MCP request context."""
+    return _SESSION_ID_CTX.get()
+
+
+def clear_session_project_dir(session_id: Optional[str] = None) -> None:
+    """Remove a tracked session's project directory mapping."""
+    target = session_id if session_id is not None else _SESSION_ID_CTX.get()
+    if target is not None:
+        _SESSION_PROJECT_DIRS.pop(target, None)
 
 
 def set_client_project_dir(project_dir: Optional[str | Path]) -> Optional[Path]:
-    """Register the active client/Bionic Project Working Folder (Priority #2; never inside MCP project root)."""
+    """Register the active client/Bionic Project Working Folder (Priority #2; never inside MCP project root).
+
+    Isolated per MCP session when an async session context is active; falls back to
+    process-wide storage for single-client / direct Python callers.
+    """
     global _ACTIVE_CLIENT_PROJECT_DIR
+    sess_id = _SESSION_ID_CTX.get()
+
     if project_dir is None or not str(project_dir).strip():
-        _ACTIVE_CLIENT_PROJECT_DIR = None
+        if sess_id is not None:
+            _SESSION_PROJECT_DIRS[sess_id] = None
+        else:
+            _ACTIVE_CLIENT_PROJECT_DIR = None
         return None
+
     raw = str(project_dir).strip()
     if raw.startswith("file://"):
         from urllib.parse import unquote, urlparse
@@ -39,15 +82,49 @@ def set_client_project_dir(project_dir: Optional[str | Path]) -> Optional[Path]:
     candidate = Path(raw).expanduser().resolve()
     if _is_inside_project_root(candidate):
         return None
-    _ACTIVE_CLIENT_PROJECT_DIR = candidate
+
+    if sess_id is not None:
+        if len(_SESSION_PROJECT_DIRS) >= _MAX_TRACKED_SESSIONS and sess_id not in _SESSION_PROJECT_DIRS:
+            oldest_key = next(iter(_SESSION_PROJECT_DIRS))
+            _SESSION_PROJECT_DIRS.pop(oldest_key, None)
+        _SESSION_PROJECT_DIRS[sess_id] = candidate
+    else:
+        _ACTIVE_CLIENT_PROJECT_DIR = candidate
     return candidate
 
 
 def get_client_project_dir() -> Optional[Path]:
     """Return the active client/Bionic Project Working Folder if safely configured outside MCP project root."""
+    sess_id = _SESSION_ID_CTX.get()
+    if sess_id is not None:
+        candidate = _SESSION_PROJECT_DIRS.get(sess_id)
+        if candidate is not None and not _is_inside_project_root(candidate):
+            return candidate
+        return None
     if _ACTIVE_CLIENT_PROJECT_DIR is not None and not _is_inside_project_root(_ACTIVE_CLIENT_PROJECT_DIR):
         return _ACTIVE_CLIENT_PROJECT_DIR
     return None
+
+
+def get_blocked_write_dirs() -> List[Path]:
+    """Return normalized directories blocked for writes via M365_MCP_BLOCKED_DIRS (colon- or semicolon-separated)."""
+    raw = (os.getenv("M365_MCP_BLOCKED_DIRS") or "").strip()
+    if not raw:
+        return []
+    parts = [p.strip() for p in re.split(r"[:;]", raw) if p.strip()]
+    resolved_dirs: List[Path] = []
+    for part in parts:
+        try:
+            resolved_dirs.append(Path(part).expanduser().resolve())
+        except Exception:
+            continue
+    return resolved_dirs
+
+
+def is_write_restricted_to_project_dir() -> bool:
+    """Return True when M365_MCP_RESTRICT_WRITE_TO_PROJECT_DIR enforces strict project-folder-only writes."""
+    raw = (os.getenv("M365_MCP_RESTRICT_WRITE_TO_PROJECT_DIR") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def is_within_trusted_project_dir(path: str | Path) -> bool:
@@ -58,10 +135,7 @@ def is_within_trusted_project_dir(path: str | Path) -> bool:
     resolved = Path(path).expanduser().resolve()
     if _is_inside_project_root(resolved):
         return False
-    try:
-        return resolved == proj or resolved.is_relative_to(proj)
-    except AttributeError:
-        return resolved == proj or str(resolved).startswith(str(proj) + "/")
+    return _is_path_inside(resolved, proj)
 
 
 def get_grant_access_timeout(default: float = 45.0) -> float:
@@ -76,6 +150,31 @@ def get_grant_access_timeout(default: float = 45.0) -> float:
     return default
 
 
+def get_background_mode() -> str:
+    """Return active background/focus-protection mode from M365_MCP_BACKGROUND_MODE.
+
+    Modes:
+      - 'no_focus' (default): Never steal OS focus (`open -g -j`, ignore caller `activate=True`),
+        minimize newly opened MCP Office windows, and restore any previously active user
+        workbook/document inside the same Office app so stray keystrokes cannot hit MCP files.
+      - 'strict': Same focus suppression, but hides newly opened MCP windows (`visible = false`)
+        instead of minimizing them for maximum same-app isolation.
+      - 'off': Legacy behavior — honors caller's `activate` flag without window isolation.
+    """
+    raw = (
+        os.getenv("M365_MCP_BACKGROUND_MODE")
+        or os.getenv("OFFICE_MCP_BACKGROUND_MODE")
+        or "no_focus"
+    ).strip().lower()
+    if raw in {"", "no_focus", "nofocus", "no-focus", "on", "true", "1", "yes", "default", "background"}:
+        return "no_focus"
+    if raw in {"strict", "hidden", "hide"}:
+        return "strict"
+    if raw in {"off", "false", "0", "no", "none", "legacy"}:
+        return "off"
+    return "no_focus"
+
+
 def get_default_output_dir() -> Optional[Path]:
     """Return the optional safe default output folder from M365_MCP_OUTPUT_DIR (Priority #3; never inside MCP project root)."""
     raw = (os.getenv("M365_MCP_OUTPUT_DIR") or os.getenv("OFFICE365_MCP_OUTPUT_DIR") or "").strip()
@@ -88,7 +187,7 @@ def get_default_output_dir() -> Optional[Path]:
 
 
 def assert_safe_write_path(path: Path, raw_input: Optional[str] = None) -> Path:
-    """Block writing user Office deliverables inside the MCP server's own project directory."""
+    """Block writing user Office deliverables inside the MCP project folder or outside configured write fences."""
     resolved = path.expanduser().resolve()
     if _is_inside_project_root(resolved):
         rel_note = ""
@@ -99,6 +198,32 @@ def assert_safe_write_path(path: Path, raw_input: Optional[str] = None) -> Path:
             "Provide an explicit absolute or ~/ user path (such as your Project Working Folder, '~/Desktop/...', or '~/Documents/...'), "
             "or set optional M365_MCP_OUTPUT_DIR."
         )
+
+    for blocked in get_blocked_write_dirs():
+        if _is_path_inside(resolved, blocked):
+            raise PermissionError(
+                f"Refusing to write output file '{resolved}' inside blocked directory '{blocked}' "
+                "(configured via M365_MCP_BLOCKED_DIRS). Choose a destination outside blocked directories."
+            )
+
+    if is_write_restricted_to_project_dir():
+        temp_staging_root = (Path(tempfile.gettempdir()) / "m365-mac-mcp").resolve()
+        if not _is_path_inside(resolved, temp_staging_root):
+            proj = get_client_project_dir()
+            allowed_root = proj if proj is not None else get_default_output_dir()
+            if allowed_root is None:
+                raise PermissionError(
+                    "Refusing to write output file: M365_MCP_RESTRICT_WRITE_TO_PROJECT_DIR is enabled, "
+                    "but no active Project Working Folder or M365_MCP_OUTPUT_DIR is configured. "
+                    "Call check_office_status(working_dir='...') first or configure M365_MCP_OUTPUT_DIR."
+                )
+            if not _is_path_inside(resolved, allowed_root):
+                raise PermissionError(
+                    f"Refusing to write output file '{resolved}' outside the active Project Working Folder "
+                    f"'{allowed_root}' (M365_MCP_RESTRICT_WRITE_TO_PROJECT_DIR is enabled). "
+                    f"Save inside '{allowed_root}' or disable M365_MCP_RESTRICT_WRITE_TO_PROJECT_DIR."
+                )
+
     return resolved
 
 
@@ -227,8 +352,84 @@ def sanitize_excel_write_value(value: Any) -> Any:
     if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
         return value
     if isinstance(value, str):
+        # Decode double-escaped Unicode literals (e.g. 'WACC \\u2193' -> 'WACC ↓', '-\\u0394NWC' -> '-ΔNWC')
+        # inside display text (never touch Excel formulas starting with '=').
+        if not value.startswith("=") and "\\u" in value:
+            value = re.sub(
+                r"\\u([0-9a-fA-F]{4})",
+                lambda m: chr(int(m.group(1), 16)),
+                value,
+            )
         return value
     return str(value)
+
+
+_EXCEL_FORMULA_QUOTE_TOKEN_RE = re.compile(
+    r'("(?:""|[^"])*"|\'(?:\'\'|[^\'])*\'!|\'(?:\'\'|[^\'])*\')'
+)
+
+
+def sanitize_excel_formula_quotes(formula: str) -> str:
+    """Repair common LLM/JSON-wrapper quote bugs inside Excel formulas.
+
+    1. Unescapes backslash-escaped double quotes (``\\"`` -> ``"``), which are never valid in
+       Excel formula syntax (Excel escapes quotes via ``""``) and are commonly leaked when
+       double-encoded JSON wrappers (such as Bionic's ``params_json``) triple-escape quotes.
+    2. Converts standalone single-quoted string literals (e.g., ``=IF(B2>0,'Go','No-Go')``)
+       into valid Excel double-quoted string literals (``=IF(B2>0,"Go","No-Go")``), while
+       strictly preserving quoted sheet references (``'Project Cash Flows'!``) and apostrophes
+       inside double-quoted strings (``"Bob's Store"``).
+    """
+    if not isinstance(formula, str) or not formula.startswith("="):
+        return formula
+
+    fixed = formula
+    if '\\"' in fixed:
+        fixed = fixed.replace('\\"', '"')
+
+    if "'" in fixed:
+        def _repl(match: re.Match) -> str:
+            tok = match.group(1)
+            # Keep valid double-quoted strings and valid 'Sheet Name'! references untouched
+            if tok.startswith('"') or tok.endswith("'!"):
+                return tok
+            # Standalone '...' is ALWAYS invalid Excel syntax -> convert to "..."
+            inner = tok[1:-1].replace("''", "'").replace('"', '""')
+            return f'"{inner}"'
+
+        fixed = _EXCEL_FORMULA_QUOTE_TOKEN_RE.sub(_repl, fixed)
+
+    return fixed
+
+
+def has_invalid_excel_formula_quotes(formula: str) -> bool:
+    """Return True if an Excel formula contains illegal ``\\"`` or standalone ``'text'`` literals."""
+    if not isinstance(formula, str) or not formula.startswith("="):
+        return False
+    return sanitize_excel_formula_quotes(formula) != formula
+
+
+def atomic_save_via_temp(save_fn, target_path: Path) -> None:
+    """Write via a sibling temp file and atomically swap into target_path via os.replace().
+
+    Prevents truncating or corrupting an existing Office file if serialization fails
+    mid-write or a cloud-sync client (Dropbox/OneDrive/iCloud) transiently locks the file.
+    """
+    import uuid as _uuid
+
+    target = Path(target_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target.parent / f".{target.stem}.tmp.{_uuid.uuid4().hex[:8]}{target.suffix}"
+    try:
+        save_fn(str(tmp_path))
+        os.replace(str(tmp_path), str(target))
+    except Exception:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except Exception:
+            pass
+        raise
 
 
 def sanitize_for_json(value: Any) -> Any:

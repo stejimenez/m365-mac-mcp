@@ -1,10 +1,10 @@
 ---
 name: boardroom-brief-generator
-version: 2.3.1A
-description: "[v2.3.1A] Turn live-recalculated Excel KPIs into a SOX-traceable executive Word/PDF memo or PowerPoint deck via m365-mac-mcp."
+version: 2.3.1C
+description: "[v2.3.1C] Turn live-recalculated Excel KPIs into a SOX-traceable executive Word/PDF memo or PowerPoint deck via Office MCP."
 ---
 
-# Boardroom Brief Generator (Excel → Word / PDF / PowerPoint) (v2.3.1A)
+# Boardroom Brief Generator (Excel → Word / PDF / PowerPoint) (v2.3.1C)
 
 ## 1. Trigger & Scope
 - **Triggers:** *"Turn this Excel model into a 1-page CFO memo"*, *"Create an executive Word/PDF brief and PowerPoint summary from this workbook."*
@@ -14,9 +14,9 @@ description: "[v2.3.1A] Turn live-recalculated Excel KPIs into a SOX-traceable e
 Confirm concisely (if missing):
 - Source Excel workbook (or call `excel_live_list_workbooks()` if open) + desired format(s) (`.docx`, `.pdf`, `.pptx`) and save folder.
 - Reporting basis label (**IFRS** or **US GAAP / FASB**) and currency/units (`$M`).
-- Ensure the active MCP profile includes Word/PowerPoint (`M365_MCP_PROFILE=EXCEL,WORD` or `FULL`, or `@`-mention your secondary `m365-mac-mcp` Word & PPT server).
+- Ensure the active MCP profile includes Word/PowerPoint (`M365_MCP_PROFILE=EXCEL,WORD` or `FULL`, or `@`-mention your secondary Word/PPT MCP server).
 
-## 3. Exact m365-mac-mcp Tool Sequence
+## 3. Exact Office MCP Tool Sequence
 1. **Audit & Read Live Numbers:**
    - Call `audit_workbook_formulas(file_path=...)` to confirm the source model is clean.
    - Call `excel_live_open(file_path=...)` + `excel_live_batch_read_ranges` on all KPI/summary ranges so every number comes verbatim from live Microsoft Excel.
@@ -26,7 +26,7 @@ Confirm concisely (if missing):
    - Add crisp bullets (`add_paragraph`, `add_list`) and KPI table via `add_table(document_id=..., rows=..., columns=..., data=..., column_widths=..., header_formatting={"bold": True, "bg_color": "1F4E79", "font_color": "FFFFFF"}, alternating_row_color="F2F6FA", repeat_header=True)`.
    - Call `save_document(..., file_path=".../Executive_Brief.docx")` (and `format="pdf"` if requested), then `close_document`.
 3. **Build PowerPoint Deck (if requested):**
-   - Call `create_presentation(title=...)` → `add_slide` + `add_text_to_slide` + `add_speaker_notes` (3–5 slides) → `save_presentation`.
+   - Call `create_presentation(title=...)` → `batch_add_slides(slides=[{"layout": "Title and Content", "title": "...", "bullets": [...], "notes": "..."}, ...])` (builds all 3–5 slides in 1 atomic call; `presentation_id` auto-resolves when 1 deck is active) → `save_presentation(file_path=".../Executive_Brief.pptx")`.
 
 ## 4. Accounting (IFRS / FASB), SOX & Formula Guardrails
 - **SOX Traceability:** Every figure MUST match Step 1's live Excel read verbatim—never extrapolate or round inconsistently. Note the source workbook filename and plain-English formula check status (e.g., *"Formula Audit: Passed — 0 errors, 0 external links"*) in the memo footer; never print internal tool or skill names.

@@ -1,10 +1,10 @@
 ---
 name: three-statement-projector
-version: 2.3.1A
-description: "[v2.3.1A] Build dynamic IFRS/FASB multi-year 3-statement Excel projections with Base/Bull/Bear scenarios and live Balance Check = 0."
+version: 2.3.1D
+description: "[v2.3.1D] Build dynamic IFRS/FASB multi-year 3-statement Excel projections with Base/Bull/Bear scenarios, Smart Magnitude & live Balance Check = 0."
 ---
 
-# 3-Statement Financial Projector (IFRS / FASB / SOX) (v2.3.1A)
+# 3-Statement Financial Projector (IFRS / FASB / SOX) (v2.3.1D)
 
 ## 1. Trigger & Scope
 - **Triggers:** *"Project FY26–FY30 with Base/Bull/Bear scenarios"*, *"Build a 5-year 3-statement forecast from these historicals."*
@@ -13,18 +13,18 @@ description: "[v2.3.1A] Build dynamic IFRS/FASB multi-year 3-statement Excel pro
 ## 2. Mandatory Pre-Flight / HALT Inputs
 **HARD STOP (ZERO TOOLS):** If ANY item below is missing from the user's prompt, reply ONLY with 1–3 concise questions and call **ZERO tools** (do NOT call `create_workbook` or invent assumptions):
 - Accounting basis: **IFRS** or **US GAAP (FASB)** (`IAS 7` vs. `ASC 230` Cash Flow classification; `IFRS 16` vs. `ASC 842` leases).
-- Forecast horizon (e.g., 5 years) and currency/units (`$M`).
+- Forecast horizon (e.g., 5 years), **currency**, and **clear input magnitude** (HALT if ambiguous).
 - Core drivers (or approval to use trailing historical averages as Base): Revenue growth %, Gross Margin %, OpEx % of Rev, Tax Rate %, D&A %, CapEx %, DSO/DIO/DPO, and Debt/Distributions.
 
-## 3. Exact m365-mac-mcp Tool Sequence
-1. **Audit Historicals:** Call `inspect_workbook(file_path=...)` and `audit_workbook_formulas(file_path=...)` to verify the base.
+## 3. Exact Office MCP Tool Sequence
+1. **Audit Historicals:** Call `inspect_workbook(file_path=...)` and `audit_workbook_formulas(file_path=...)` to verify the base & detected tables.
 2. **Open & Add Assumptions Tab:** Call `open_workbook`, then `add_worksheet(workbook_id, "Assumptions", position=0)`.
-3. **Add Scenario Dropdown:** Call `add_data_validation(validation_type="list", formula1=["Base", "Bull", "Bear"])` on `Assumptions!B2` and wire active drivers via `=IF($B$2="Bull", ..., IF($B$2="Bear", ..., ...))`.
+3. **Add Scenario Dropdown:** Call `add_data_validation(validation_type="list", formula1=["Base", "Bull", "Bear"])` on the active scenario cell (`Assumptions!B7` under 4-line headers, or `B2` on legacy Row-1 tabs) and wire active drivers to that **exact** anchored cell (`=IF(Assumptions!$B$7="Bull", ..., IF(Assumptions!$B$7="Bear", ..., ...))`).
 4. **Write Projections (1 `batch_write_ranges` Call/Sheet — Labels/Inputs + `fill_formula` across projected columns, ZERO mental math):** Across `Assumptions`, `Income Statement`, `Balance Sheet`, and `Cash Flow`:
    - **IS:** Dynamic Revenue, COGS, OpEx, EBIT, Taxes (`IAS 12`/`ASC 740`), Net Income.
    - **BS:** Working capital via DSO/DIO/DPO, PP&E roll-forward (`Prior + CapEx - D&A` per `IAS 16`/`ASC 360`), Retained Earnings (`Prior RE + 'Income Statement'!NI - Distributions`), **Cash linked to `'Cash Flow'!Ending Cash`**, and `Balance Check = Assets - L&E`.
    - **CF:** Net Income link, `+D&A`, Working Capital deltas (`-ΔAR`, `-ΔInv`, `+ΔAP`), CapEx, Financing, Net Change in Cash, Ending Cash.
-5. **Format, Save & Close:** Call `batch_format_workbook` (`auto_color_financial_model=True`, navy `#1F4E79` headers, `#D9E1F2` totals, `$#,##0;($#,##0);"-"`, `0.0%`, widths, `freeze_panes="B2"`), then `save_workbook` and `close_workbook(workbook_id=...)`.
+5. **Format, Save & Close:** Call `batch_format_workbook(operations=[{"auto_color_financial_model": true, "auto_fit_columns": true, "freeze_panes": "auto"}])` (auto-detects multi-table headers/totals on ANY row/col & applies Smart Magnitude), then `save_workbook` (resolve any `sanity_warnings`) and `close_workbook(workbook_id=...)`.
 
 ## 4. Accounting (IFRS / FASB), SOX & Formula Guardrails
 - **IFRS / FASB:** Interest Paid = Operating and Dividends Paid = Financing under FASB `ASC 230` (or consistently labeled per `IAS 7` under IFRS). Zero undocumented Balance Sheet plugs.
